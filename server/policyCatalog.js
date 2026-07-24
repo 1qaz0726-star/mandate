@@ -1,0 +1,119 @@
+'use strict';
+
+/** Policy catalog for GET /api/policies — aligned with docs/trust/POLICY_SPEC.md */
+const POLICIES = [
+  {
+    policyId: 'POL-AUTH-001',
+    title: '已撤銷拒絕',
+    evalStep: 1,
+    decisions: ['DENY_REVOKED'],
+    summary: 'IF mandate.status == REVOKED THEN 拒絕所有工具呼叫。',
+  },
+  {
+    policyId: 'POL-AUTH-002',
+    title: '已過期拒絕',
+    evalStep: 1,
+    decisions: ['DENY_EXPIRED'],
+    summary: 'IF now >= expiresAt THEN 拒絕所有工具呼叫。',
+  },
+  {
+    policyId: 'POL-AUTH-003',
+    title: '無有效 Mandate／無憑證綁定',
+    evalStep: 1,
+    decisions: ['DENY_POLICY'],
+    summary: 'IF 無 Mandate 或主體不一致或非 ACTIVE THEN 拒絕。',
+  },
+  {
+    policyId: 'POL-GATE-000',
+    title: '工具未註冊或 Agent 呼叫禁工具',
+    evalStep: 2,
+    decisions: ['DENY_POLICY'],
+    summary: 'IF Agent 呼叫 commit 或未註冊工具 THEN 拒絕。',
+  },
+  {
+    policyId: 'POL-GATE-001',
+    title: 'Deny list（供應商／工具）',
+    evalStep: 2,
+    decisions: ['DENY_POLICY'],
+    summary: 'IF 工具或供應商在 deniedTools/deniedSuppliers THEN 拒絕。',
+  },
+  {
+    policyId: 'POL-GATE-002',
+    title: 'Allow list（工具準入）',
+    evalStep: 3,
+    decisions: ['DENY_POLICY'],
+    summary: 'IF 工具不在 mandate.allowedTools 或 Agent 白名單 THEN 拒絕。',
+  },
+  {
+    policyId: 'POL-GATE-003',
+    title: '敏感匯出閘門',
+    evalStep: 2,
+    decisions: ['DENY_POLICY', 'PENDING_HUMAN'],
+    summary: 'Agent 不可 export_sensitive；Human 呼叫時進入 HITL。',
+  },
+  {
+    policyId: 'POL-CARB-001',
+    title: 'PCF 品質閘 Level 1（必填欄位）',
+    evalStep: 4,
+    decisions: ['DENY_CONSTRAINT'],
+    summary: 'IF ingest 缺 tCO2e/unit/method/boundary/period/supplierId 或 submit 無 staging THEN 拒收。',
+  },
+  {
+    policyId: 'POL-CARB-002',
+    title: 'PCF 品質閘 Level 2（進階／查驗）',
+    evalStep: 4,
+    decisions: ['DENY_CONSTRAINT'],
+    summary: 'IF 標 verified 但缺 verificationReportId THEN 拒收。',
+  },
+  {
+    policyId: 'POL-REQ-001',
+    title: '須先索取才能取回供應商回覆',
+    evalStep: 4,
+    decisions: ['DENY_CONSTRAINT'],
+    summary: 'IF fetch 前未 request_emissions 或無 PCF 回覆 THEN 拒絕。',
+  },
+  {
+    policyId: 'POL-EXP-001',
+    title: '匯出客戶草稿／稽核',
+    evalStep: 2,
+    decisions: ['DENY_POLICY', 'DENY_CONSTRAINT'],
+    summary: 'Agent 不可匯出；export_client_draft 須有可用 staging。',
+  },
+  {
+    policyId: 'POL-HITL-010',
+    title: 'CBAM 草稿必須人類確認',
+    evalStep: 5,
+    decisions: ['PENDING_HUMAN', 'DENY_POLICY'],
+    summary: 'submit_cbam_draft 永遠 PENDING；commit 須有效 Approval。',
+  },
+  {
+    policyId: 'POL-REV-001',
+    title: '撤銷作廢 pending approvals',
+    evalStep: 0,
+    decisions: ['ALLOW'],
+    summary: 'revoke_mandate 副作用：作廢待核准項目（非 evaluate 短路步驟）。',
+  },
+  {
+    policyId: 'POL-REV-002',
+    title: '禁止復活已撤銷 Mandate',
+    evalStep: 3,
+    decisions: ['DENY_POLICY'],
+    summary: 'IF change_mandate 試圖復活 REVOKED/EXPIRED THEN 拒絕。',
+  },
+  {
+    policyId: 'POL-REV-010',
+    title: '資料分享撤銷後拒收／拒提交',
+    evalStep: 4,
+    decisions: ['DENY_POLICY'],
+    summary: 'IF 供應商 shareRevoked THEN fetch/ingest/submit/commit/export 拒絕。',
+  },
+  {
+    policyId: 'POL-ALLOW-000',
+    title: '通過所有檢查允許執行',
+    evalStep: 6,
+    decisions: ['ALLOW'],
+    summary: 'IF 步驟 1–5 皆通過 THEN ALLOW 執行工具。',
+  },
+];
+
+module.exports = { POLICIES };

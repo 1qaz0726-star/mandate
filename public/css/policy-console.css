@@ -1,0 +1,305 @@
+/* Policy Engine Console — judge-facing transparency view */
+
+.policy-console {
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100vh - var(--topbar-h));
+  background: var(--bg);
+}
+
+.policy-console-head {
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-elevated);
+}
+
+.policy-console-head h1 {
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin: 0 0 var(--space-1);
+}
+
+.policy-console-head .policy-console-head-row > div > p {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 0.875rem;
+}
+
+.policy-console-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(280px, 1.4fr) minmax(200px, 1fr);
+  gap: 1px;
+  flex: 1;
+  background: var(--line);
+  min-height: 0;
+}
+
+.policy-col {
+  background: var(--bg-elevated);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.policy-col-head {
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--line);
+  font-size: 0.75rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-muted);
+}
+
+.policy-col-body {
+  padding: var(--space-3) var(--space-4);
+  overflow-y: auto;
+  flex: 1;
+}
+
+.policy-filter {
+  width: 100%;
+  margin-bottom: var(--space-3);
+  padding: var(--space-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  font-family: var(--font-body);
+  font-size: 0.8125rem;
+  background: var(--bg);
+}
+
+.policy-catalog {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.policy-catalog li {
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+
+.policy-catalog li:hover,
+.policy-catalog li.active {
+  color: var(--brand);
+}
+
+.policy-catalog li:last-child {
+  border-bottom: none;
+}
+
+.policy-catalog .pid {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.75rem;
+  color: var(--ink-faint);
+}
+
+.policy-catalog .ptitle {
+  font-weight: 500;
+  margin-top: 2px;
+}
+
+.policy-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.policy-presets .btn {
+  font-size: 0.75rem;
+}
+
+.policy-pipeline {
+  list-style: none;
+  margin: 0 0 var(--space-4);
+  padding: 0;
+}
+
+.policy-pipeline li {
+  display: flex;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+  border-bottom: 1px dashed var(--line);
+  font-size: 0.8125rem;
+}
+
+.policy-pipeline li:last-child {
+  border-bottom: none;
+}
+
+.pipeline-step-num {
+  flex-shrink: 0;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  background: var(--bg-inset);
+  color: var(--ink-muted);
+}
+
+.policy-pipeline li.pass .pipeline-step-num {
+  background: var(--brand-wash);
+  color: var(--brand);
+}
+
+.policy-pipeline li.fail .pipeline-step-num {
+  background: var(--alert-wash);
+  color: var(--alert);
+}
+
+.policy-pipeline li.pending .pipeline-step-num {
+  background: #EDE8D8;
+  color: var(--warn);
+}
+
+.policy-pipeline li.skipped {
+  opacity: 0.45;
+}
+
+.pipeline-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.pipeline-title {
+  font-weight: 500;
+}
+
+.pipeline-detail {
+  color: var(--ink-muted);
+  font-size: 0.75rem;
+  margin-top: 2px;
+}
+
+.pipeline-pid {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.6875rem;
+  color: var(--ink-faint);
+}
+
+.policy-result {
+  padding: var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+  margin-bottom: var(--space-3);
+}
+
+.policy-result.empty {
+  color: var(--ink-muted);
+  font-size: 0.875rem;
+}
+
+.policy-decision-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: var(--radius);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  margin-bottom: var(--space-2);
+}
+
+.policy-decision-badge.ALLOW {
+  background: var(--brand-wash);
+  color: var(--brand);
+}
+
+.policy-decision-badge.DENY_CONSTRAINT,
+.policy-decision-badge.DENY_POLICY,
+.policy-decision-badge.DENY_REVOKED,
+.policy-decision-badge.DENY_EXPIRED {
+  background: var(--alert-wash);
+  color: var(--alert);
+}
+
+.policy-decision-badge.PENDING_HUMAN {
+  background: #EDE8D8;
+  color: var(--warn);
+}
+
+.policy-plain {
+  font-size: 0.875rem;
+  line-height: 1.45;
+  margin: 0;
+}
+
+.policy-context dl {
+  margin: 0;
+  font-size: 0.8125rem;
+}
+
+.policy-context dt {
+  color: var(--ink-faint);
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-top: var(--space-2);
+}
+
+.policy-context dt:first-child {
+  margin-top: 0;
+}
+
+.policy-context dd {
+  margin: 2px 0 0;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.75rem;
+  word-break: break-word;
+}
+
+.policy-simulator {
+  padding: var(--space-3) var(--space-5);
+  border-top: 1px solid var(--line);
+  background: var(--bg-elevated);
+}
+
+.policy-simulator-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  align-items: flex-end;
+}
+
+.policy-simulator-row label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: 0.75rem;
+  color: var(--ink-muted);
+  min-width: 140px;
+}
+
+.policy-simulator-row select {
+  padding: var(--space-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  font-family: var(--font-body);
+  font-size: 0.8125rem;
+  background: var(--bg);
+}
+
+.policy-foot {
+  padding: 0 var(--space-5) var(--space-3);
+  font-size: 0.75rem;
+  color: var(--ink-muted);
+}
+
+.policy-foot .link-btn {
+  font-size: inherit;
+}
+
+@media (max-width: 960px) {
+  .policy-console-grid {
+    grid-template-columns: 1fr;
+  }
+}

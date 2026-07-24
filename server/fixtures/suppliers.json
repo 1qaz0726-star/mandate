@@ -1,0 +1,32 @@
+[
+  {
+    "supplierId": "supplier_green_01",
+    "orgName": "青禾零件股份有限公司",
+    "credentials": [
+      {
+        "credentialId": "vc_carbon_pcf_001",
+        "type": "CarbonPCF",
+        "issuer": "mock_issuer_tabei",
+        "expiresAt": "2027-01-01T00:00:00+08:00",
+        "signatureValid": true
+      },
+      {
+        "credentialId": "vc_esg_001",
+        "type": "ESGAttestation",
+        "issuer": "mock_issuer_tabei",
+        "expiresAt": "2027-01-01T00:00:00+08:00",
+        "signatureValid": true
+      }
+    ]
+  },
+  {
+    "supplierId": "supplier_unverified_01",
+    "orgName": "無證零件行（測試用）",
+    "credentials": []
+  },
+  {
+    "supplierId": "supplier_blocked_99",
+    "orgName": "黑名單供應商（禁止往來）",
+    "credentials": []
+  }
+]

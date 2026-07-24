@@ -1,0 +1,40 @@
+/* Mandate design tokens — industrial console */
+:root {
+  --bg: #F3F0EA;
+  --bg-elevated: #FAF8F4;
+  --bg-inset: #EBE7DF;
+  --ink: #1A1A18;
+  --ink-muted: #5C5A54;
+  --ink-faint: #8A877E;
+  --line: #C9C3B6;
+  --line-strong: #A39E90;
+
+  --brand: #2F5D50;
+  --brand-deep: #244A40;
+  --brand-wash: #D8E4DF;
+
+  --alert: #9A4E2C;
+  --alert-deep: #7A3D22;
+  --alert-wash: #EDE0D8;
+
+  --ok: #2F5D50;
+  --warn: #8A6A2F;
+  --deny: #9A4E2C;
+
+  --font-display: "Fraunces", "Georgia", serif;
+  --font-body: "IBM Plex Sans", "Helvetica Neue", sans-serif;
+
+  --radius: 4px;
+  --radius-max: 6px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
+  --topbar-h: 52px;
+  --col-gap: 1px;
+  --shadow-none: none;
+  --ease: 180ms ease;
+}

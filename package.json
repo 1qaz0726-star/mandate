@@ -1,0 +1,15 @@
+{
+  "name": "mandate",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev:cf": "wrangler dev",
+    "deploy:cf": "wrangler deploy",
+    "smoke": "node server/smoke.js",
+    "smoke:agent": "node server/agent-smoke.js"
+  },
+  "devDependencies": {
+    "wrangler": "^4.24.0"
+  }
+}

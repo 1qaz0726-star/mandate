@@ -1,0 +1,62 @@
+{
+  "org": {
+    "orgId": "org_acme",
+    "displayName": "艾克美工業・貿易合規"
+  },
+  "principal": {
+    "principalId": "user_compliance_01",
+    "principalType": "USER",
+    "orgId": "org_acme",
+    "displayName": "合規人員・林詠晴",
+    "roles": ["compliance"],
+    "authSource": "fixture",
+    "email": "compliance01@acme.example"
+  },
+  "approver": {
+    "principalId": "user_approver_01",
+    "principalType": "USER",
+    "orgId": "org_acme",
+    "displayName": "合規主管・陳核准",
+    "roles": ["approver", "admin"],
+    "authSource": "fixture"
+  },
+  "agent": {
+    "agentId": "agent_mandate_v1",
+    "agentVersion": "1.0.0",
+    "llmRole": "propose_only",
+    "allowedTools": [
+      "request_emissions",
+      "fetch_supplier_response",
+      "ingest_pcf_payload",
+      "submit_cbam_draft"
+    ]
+  },
+  "mandate": {
+    "mandateId": "mandate_acme_compliance_01_v1",
+    "orgId": "org_acme",
+    "principalId": "user_compliance_01",
+    "agentId": "agent_mandate_v1",
+    "status": "ACTIVE",
+    "issuedAt": "2026-07-20T00:00:00+08:00",
+    "expiresAt": "2026-12-31T23:59:59+08:00",
+    "revokedAt": null,
+    "revokeReason": null,
+    "allowedTools": [
+      "request_emissions",
+      "fetch_supplier_response",
+      "ingest_pcf_payload",
+      "submit_cbam_draft"
+    ],
+    "deniedTools": [
+      "commit_cbam_draft",
+      "change_mandate",
+      "export_sensitive"
+    ],
+    "deniedSuppliers": ["supplier_blocked_99"],
+    "constraints": {
+      "requirePcfQualityGate": true,
+      "credentialTypes": ["CarbonPCF", "ESGAttestation"]
+    },
+    "version": 1
+  }
+}
