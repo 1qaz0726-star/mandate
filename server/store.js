@@ -2,6 +2,7 @@
 
 const crypto = require('crypto');
 const { session, suppliers, pcfPayloads } = require('./fixtures/bundle');
+const supabaseSync = require('./supabaseSync');
 
 function deepClone(obj) {
   return JSON.parse(JSON.stringify(obj));
@@ -176,8 +177,15 @@ function appendAudit(partial) {
     argsDigest: partial.argsDigest || null,
     inputHash: partial.inputHash || (partial.argsDigest ? `sha256:${partial.argsDigest}` : null),
     inputRedacted: partial.inputRedacted || null,
+    reasoningSummary: partial.reasoningSummary || null,
+    eventKind: partial.eventKind || 'TOOL_DECISION',
   };
   state.audit.push(event);
+  supabaseSync.syncAuditEvent(event);
+  if (event.approvalId) {
+    const approval = getApproval(event.approvalId);
+    if (approval) supabaseSync.syncApproval(approval);
+  }
   return event;
 }
 

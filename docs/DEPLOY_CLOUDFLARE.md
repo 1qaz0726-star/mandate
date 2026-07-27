@@ -22,6 +22,13 @@ npx wrangler login
 npx wrangler secret put OPENAI_API_KEY
 ```
 
+（選填）把稽核紀錄／核准紀錄／AI 對話雙寫進 Supabase（見 `supabase/schema.sql`）：
+
+```powershell
+npx wrangler secret put SUPABASE_URL
+npx wrangler secret put SUPABASE_SERVICE_KEY
+```
+
 部署：
 
 ```powershell
@@ -43,6 +50,8 @@ npm run dev:cf
 ```
 OPENAI_API_KEY=sk-...
 OPENAI_MODEL=gpt-4o-mini
+SUPABASE_URL=https://xxxx.supabase.co
+SUPABASE_SERVICE_KEY=eyJ...
 ```
 
 ## 自訂網域（選填）
@@ -56,6 +65,7 @@ Cloudflare Dashboard → Workers & Pages → mandate → Settings → Domains �
 | 狀態 | Demo 資料在 Worker **記憶體**，冷啟動或閒置後可能重置 |
 | AI | 未設 `OPENAI_API_KEY` 時仍可用按鈕備援三幕 |
 | 機密 | **勿**把 API Key 寫進 `wrangler.toml`；用 `wrangler secret` |
+| Supabase | 選填、雙寫、失敗不影響 Demo；未設 `SUPABASE_URL`/`SUPABASE_SERVICE_KEY` 時完全不啟用 |
 
 ## 與本地 `npm start` 差異
 

@@ -1,0 +1,34 @@
+# Mandate — 給 Claude Code 的專案指引
+
+碳數據信任閘門 Agent（CBAM／嵌入排放），可信 AI 黑客松 2026 PoC。
+
+## 先讀這些，不要重複問
+
+範圍、產品名、Demo 三幕劇情已經**定案鎖死**（2026-07-20）：`DECISIONS.md`。
+評審敘事、評分對齊、六要點話術：`docs/STRATEGY.md`。
+六信任要點的完整規格：`docs/trust/*.md`（`POLICY_SPEC.md`、`PERMISSION_MATRIX.md`、`DATA_MODEL.md`、`GOVERNANCE_GAP_MEMO.md`、`TRUST_ARCHITECTURE.md`、`THREAT_AND_GAPS.md`）。
+
+**不要在未看過 `DECISIONS.md` 第 7 節「V1 刻意不做」之前，建議恢復那些排除項目**（真 CBAM registry、碳權避險、儀表板、多 Agent、讓 LLM 自判權限）——這些是團隊評估過的主動排除，不是遺漏。修改範圍需要「主辦規則衝突」或「隊長明確宣告改題」，且要在 `DECISIONS.md` 留下日期與原因。
+
+## 不可違反的架構原則
+
+- **`server/policy.js` 是唯一放行點**。任何新工具、新規則，一律先改 `docs/trust/POLICY_SPEC.md`、程式碼分支加 `// POL-xxx` 註解對應規格，再改 `server/policy.js`。不要讓 LLM 自己判斷權限。
+- **`commit_cbam_draft`（真正寫入 CBAM 草稿）永遠不能被 Agent 呼叫**，只能是人類/後端觸發。這是整個 Demo 論證的核心——一旦讓 Agent 直接呼叫它，HITL（人審）敘事就整個垮了。改動 `server/agent.js`、`server/toolRuntime.js` 時特別注意這條線沒被打破。
+- **V1 刻意零持久化（核心閘門邏輯）**：`server/store.js` 的 `state` 是記憶體變數，資料全來自 `server/fixtures/`，重啟就重置（有 `/api/reset`）。這是刻意設計，不要主動建議加資料庫接管核心邏輯。
+  - 例外（2026-07-27 使用者主動要求，非 AI 建議）：`server/supabaseSync.js` 把稽核紀錄／核准紀錄／AI 對話**額外雙寫**進 Supabase（PostgREST fetch，無 SDK），純附加、失敗不影響閘門邏輯，未設 `SUPABASE_URL`/`SUPABASE_SERVICE_KEY` 時完全不啟用。這不算恢復被排除的功能，是強化 Audit Log 這個既有信任要點——但正式上場前建議在 `DECISIONS.md` 補一筆日期與原因，避免評審對照文件時出現矛盾。
+
+## 有兩個執行入口，改動時兩邊都要顧到
+
+`server/index.js`（本機 `npm start`，Node 原生 `http`）和 `worker/index.js`（Cloudflare Workers，`wrangler deploy`）**共用同一套邏輯**，都是透過 `server/apiFetch.js` 進去。改 API 行為時，本機測完不代表 Workers 版本沒問題，兩邊入口都要留意。
+
+## 已知歷史問題
+
+`server/agent.js` 第 45-46 行曾經有一個逗號打成分號的語法錯誤，導致 `npm start` 直接 crash（`npm run smoke` 測不到這個路徑，會誤以為沒事）。如果又遇到啟動就 crash，先檢查這類低級語法錯誤，而不是假設是邏輯問題。
+
+## Demo 三幕的 policyId 是穩定契約
+
+`POL-CARB-001`（拒收缺欄位）、`POL-HITL-010`（送審）、`POL-REV-010`（撤銷後拒用）這幾個 ID 會被 Demo 逐字稿、簡報、Governance Gap Memo 交叉引用。改規則邏輯可以，但**不要隨意改這些 ID 字串**，否則文件跟畫面會對不上。
+
+## 团队协作
+
+這是共用 repo，不要直接 push 到 `main`。改完先跑 `npm run smoke`（16 項 policy 決策測試，秒級）確認沒把閘門邏輯改壞，再開 PR。

@@ -43,7 +43,7 @@ async function runAgentTurn({ message, sessionId = 'default', maxSteps = DEFAULT
 
   if (!llm.isConfigured()) {
     const reply =
-      '尚未設定 OPENAI_API_KEY。本地用 .env；Cloudflare 用 wrangler secret put OPENAI_API_KEY。或先用左邊按鈕操作。',
+      '尚未設定 OPENAI_API_KEY。本地用 .env；Cloudflare 用 wrangler secret put OPENAI_API_KEY。或先用左邊按鈕操作。';
     agentSession.appendMessage(sessionId, 'assistant', reply);
     return { configured: false, reply, tool: null, steps: [] };
   }
@@ -69,6 +69,18 @@ async function runAgentTurn({ message, sessionId = 'default', maxSteps = DEFAULT
         context,
       });
     } catch (e) {
+      const session = store.getSession();
+      const actor = buildAgentActor(session);
+      store.appendAudit({
+        principalId: session.principal?.principalId,
+        actorId: actor.actorId,
+        actorType: actor.actorType,
+        toolName: 'llm_propose',
+        decision: 'ERROR',
+        policyId: null,
+        reason: e.message || String(e),
+        eventKind: 'LLM_ERROR',
+      });
       return {
         configured: true,
         error: e.message || String(e),

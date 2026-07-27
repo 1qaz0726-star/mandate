@@ -14,6 +14,7 @@ const { evaluateWithTrace, STEP_META } = require('./policy');
 const { POLICIES } = require('./policyCatalog');
 const { checkPcfPayload, buildSupplementLetter } = require('./pcfCheck');
 const { plainReason } = require('./plainReason');
+const supabaseSync = require('./supabaseSync');
 
 function buildActor(body) {
   const st = store.getState();
@@ -197,6 +198,34 @@ async function handleApiPath(method, pathname, body) {
 
   if (method === 'GET' && pathname === '/api/agent/status') {
     return { status: 200, body: llm.status() };
+  }
+
+  if (method === 'GET' && pathname === '/api/audit/cloud') {
+    if (!supabaseSync.isConfigured()) {
+      return { status: 200, body: { configured: false } };
+    }
+    try {
+      const [events, brokenEntries] = await Promise.all([
+        supabaseSync.fetchAuditLog({ bootId: supabaseSync.BOOT_ID }),
+        supabaseSync.verifyAuditChain(supabaseSync.BOOT_ID),
+      ]);
+      return {
+        status: 200,
+        body: {
+          configured: true,
+          bootId: supabaseSync.BOOT_ID,
+          count: events.length,
+          chainIntact: brokenEntries.length === 0,
+          brokenCount: brokenEntries.length,
+          events,
+        },
+      };
+    } catch (e) {
+      return {
+        status: 200,
+        body: { configured: true, error: e.message || String(e) },
+      };
+    }
   }
 
   const exportDraftMatch = pathname.match(/^\/api\/export\/client-draft\/([^/]+)$/);

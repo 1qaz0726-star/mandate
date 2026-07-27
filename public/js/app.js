@@ -938,6 +938,9 @@ function setView(view) {
     setViewPolicy();
     maybeAutoOpenPolicyGuide();
   }
+  if (detail) {
+    loadCloudAudit();
+  }
 }
 
 function setViewDashboard() {
@@ -1045,6 +1048,54 @@ async function exportClientDraft() {
   }
 }
 
+let cloudAuditListOpen = false;
+
+function setCloudAuditBadge(state, text) {
+  const badge = $("cloud-audit-badge");
+  if (!badge) return;
+  badge.dataset.state = state;
+  badge.textContent = text;
+}
+
+async function loadCloudAudit() {
+  const list = $("cloud-audit-list");
+  setCloudAuditBadge("loading", "☁ 檢查雲端持久化中…");
+  try {
+    const data = await api("/audit/cloud");
+    if (!data.configured) {
+      setCloudAuditBadge("off", "☁ 未接 Supabase（僅本機記憶體，重啟即消失）");
+      if (list) list.hidden = true;
+      return;
+    }
+    if (data.error) {
+      setCloudAuditBadge("error", `☁ 讀取失敗：${data.error}`);
+      if (list) list.hidden = true;
+      return;
+    }
+    const chainText = data.chainIntact
+      ? `雜湊鏈完整`
+      : `⚠ 雜湊鏈異常（${data.brokenCount} 筆對不上，可能被竄改）`;
+    setCloudAuditBadge(
+      data.chainIntact ? "ok" : "broken",
+      `☁ 已同步 Supabase・${data.count} 筆・${chainText}`
+    );
+    if (list) {
+      list.innerHTML = (data.events || [])
+        .slice()
+        .reverse()
+        .map((ev) => {
+          const hash = (ev.entry_hash || "").slice(0, 12);
+          return `<li>${escapeHtml(formatTs(ev.ts))} · ${escapeHtml(ev.tool_name || "—")} · ${escapeHtml(ev.decision || "—")} · ${escapeHtml(hash)}…</li>`;
+        })
+        .join("");
+      list.hidden = !cloudAuditListOpen;
+    }
+  } catch (e) {
+    setCloudAuditBadge("error", `☁ 讀取失敗：${e.message}`);
+    if (list) list.hidden = true;
+  }
+}
+
 async function exportAuditLog() {
   try {
     const data = await api("/export/audit");
@@ -1125,6 +1176,12 @@ function bind() {
   });
   $("btn-export-draft")?.addEventListener("click", exportClientDraft);
   $("btn-export-audit")?.addEventListener("click", exportAuditLog);
+  $("btn-cloud-audit-refresh")?.addEventListener("click", loadCloudAudit);
+  $("cloud-audit-badge")?.addEventListener("click", () => {
+    cloudAuditListOpen = !cloudAuditListOpen;
+    const list = $("cloud-audit-list");
+    if (list) list.hidden = !cloudAuditListOpen || !list.innerHTML;
+  });
   $("btn-check-pcf")?.addEventListener("click", checkSupplierPcf);
   $("tpl-bad")?.addEventListener("click", () => {
     $("supplier-json").value = JSON.stringify(SUPPLIER_TEMPLATES.bad, null, 2);
