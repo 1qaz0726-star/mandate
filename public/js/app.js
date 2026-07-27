@@ -1081,8 +1081,6 @@ async function loadCloudAudit() {
     );
     if (list) {
       list.innerHTML = (data.events || [])
-        .slice()
-        .reverse()
         .map((ev) => {
           const hash = (ev.entry_hash || "").slice(0, 12);
           return `<li>${escapeHtml(formatTs(ev.ts))} · ${escapeHtml(ev.tool_name || "—")} · ${escapeHtml(ev.decision || "—")} · ${escapeHtml(hash)}…</li>`;

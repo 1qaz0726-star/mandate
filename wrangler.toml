@@ -16,11 +16,15 @@ directory = "./public"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
 
-[vars]
-OPENAI_MODEL = "gpt-4o-mini"
-
-# Secret (required for AI Agent):
-#   npx wrangler secret put OPENAI_API_KEY
+# All config below is set via `wrangler secret put <NAME>` (see docs/DEPLOY_CLOUDFLARE.md),
+# not [vars] — a [vars] default with the same name as a secret silently overrides the
+# secret on deploy (wrangler warns but still does it), which broke OPENAI_MODEL when it
+# needed an OpenRouter-style "provider/model" value instead of plain "gpt-4o-mini".
+#
+# Secrets:
+#   OPENAI_API_KEY            required for AI Agent
+#   OPENAI_MODEL, OPENAI_BASE_URL   optional (defaults: gpt-4o-mini / api.openai.com)
+#   SUPABASE_URL, SUPABASE_SERVICE_KEY   optional, enables cloud audit persistence
 
 [observability]
 enabled = true

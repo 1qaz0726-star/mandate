@@ -9,7 +9,14 @@
 
 const crypto = require('crypto');
 
-const BOOT_ID = crypto.randomUUID();
+// Lazy, not module-scope: Cloudflare Workers disallow crypto.randomUUID() (and other
+// async/random I/O) at global scope — it must run inside a request handler. The first
+// call happens whenever the first request touches supabaseSync, well after module init.
+let _bootId = null;
+function getBootId() {
+  if (!_bootId) _bootId = crypto.randomUUID();
+  return _bootId;
+}
 
 function isConfigured() {
   return Boolean(
@@ -94,7 +101,7 @@ async function postRow(table, row, { onConflict } = {}) {
 function syncAuditEvent(event) {
   if (!event || !isConfigured()) return;
   postRow('audit_log', {
-    boot_id: BOOT_ID,
+    boot_id: getBootId(),
     audit_event_id: event.auditEventId || event.eventId || null,
     ts: event.ts || null,
     org_id: event.orgId || null,
@@ -123,7 +130,7 @@ function syncApproval(approval) {
   postRow(
     'approvals',
     {
-      boot_id: BOOT_ID,
+      boot_id: getBootId(),
       approval_id: approval.approvalId,
       mandate_id: approval.mandateId || null,
       type: approval.type || null,
@@ -143,7 +150,7 @@ function syncApproval(approval) {
 function syncMessage(sessionId, message) {
   if (!message || !isConfigured()) return;
   postRow('ai_messages', {
-    boot_id: BOOT_ID,
+    boot_id: getBootId(),
     session_id: sessionId || 'default',
     role: message.role || null,
     content: typeof message.content === 'string' ? message.content : JSON.stringify(message.content),
@@ -151,21 +158,26 @@ function syncMessage(sessionId, message) {
   });
 }
 
-// Reads are on-demand from the "雲端稽核" UI panel, so callers get the real error
-// (after one retry) instead of a swallowed one — the panel needs to say *why* it failed.
-async function fetchAuditLog({ bootId, limit = 200 } = {}) {
-  const id = bootId || BOOT_ID;
+// Reads are on-demand from the cloud-audit UI panel, so callers get the real error
+// (after one retry) instead of a swallowed one.
+//
+// No boot_id filter by default: on a long-running local process one boot_id covers the
+// whole session, but each Cloudflare Workers isolate has its own module state, and two
+// requests seconds apart can land on different isolates with different boot_ids. Scoping
+// this query to "the current isolate's boot_id" made the panel show 0 rows right after a
+// real write. Global "latest N" makes the panel reliably show real data on Workers too.
+async function fetchAuditLog({ bootId, limit = 50 } = {}) {
   const qs = new URLSearchParams({
-    boot_id: `eq.${id}`,
-    select: 'id,audit_event_id,ts,tool_name,decision,policy_id,actor_type,event_kind,entry_hash',
-    order: 'id.asc',
+    select: 'id,boot_id,audit_event_id,ts,tool_name,decision,policy_id,actor_type,event_kind,entry_hash',
+    order: 'id.desc',
     limit: String(limit),
   });
+  if (bootId) qs.set('boot_id', `eq.${bootId}`);
   return withRetry(() => requestJson(`/rest/v1/audit_log?${qs.toString()}`));
 }
 
 async function verifyAuditChain(bootId) {
-  const id = bootId || BOOT_ID;
+  const id = bootId || getBootId();
   return withRetry(() =>
     requestJson('/rest/v1/rpc/mandate_verify_audit_chain', {
       method: 'POST',
@@ -182,5 +194,8 @@ module.exports = {
   syncMessage,
   fetchAuditLog,
   verifyAuditChain,
-  BOOT_ID,
 };
+
+// Lazy getter so `supabaseSync.BOOT_ID` still works as a plain property read at call
+// sites, without forcing crypto.randomUUID() to run at module-load (global scope).
+Object.defineProperty(module.exports, 'BOOT_ID', { get: getBootId });

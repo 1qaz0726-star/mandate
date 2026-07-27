@@ -205,15 +205,16 @@ async function handleApiPath(method, pathname, body) {
       return { status: 200, body: { configured: false } };
     }
     try {
-      const [events, brokenEntries] = await Promise.all([
-        supabaseSync.fetchAuditLog({ bootId: supabaseSync.BOOT_ID }),
-        supabaseSync.verifyAuditChain(supabaseSync.BOOT_ID),
-      ]);
+      const events = await supabaseSync.fetchAuditLog({ limit: 50 });
+      // Verify the chain for whichever boot_id the most recent row belongs to (the
+      // chain is scoped per boot_id; older rows in the list may be from earlier runs).
+      const latestBootId = events[0]?.boot_id || null;
+      const brokenEntries = latestBootId ? await supabaseSync.verifyAuditChain(latestBootId) : [];
       return {
         status: 200,
         body: {
           configured: true,
-          bootId: supabaseSync.BOOT_ID,
+          bootId: latestBootId,
           count: events.length,
           chainIntact: brokenEntries.length === 0,
           brokenCount: brokenEntries.length,
