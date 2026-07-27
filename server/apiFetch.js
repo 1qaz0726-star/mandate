@@ -14,6 +14,8 @@ const { evaluateWithTrace, STEP_META } = require('./policy');
 const { POLICIES } = require('./policyCatalog');
 const { checkPcfPayload, buildSupplementLetter } = require('./pcfCheck');
 const { plainReason } = require('./plainReason');
+const supabaseSync = require('./supabaseSync');
+const pactMapping = require('./pactMapping');
 
 function buildActor(body) {
   const st = store.getState();
@@ -195,8 +197,56 @@ async function handleApiPath(method, pathname, body) {
     return { status: 200, body: { payload } };
   }
 
+  const pcfPactMatch = pathname.match(/^\/api\/pcf\/([^/]+)\/pact$/);
+  if (method === 'GET' && pcfPactMatch) {
+    const supplierId = decodeURIComponent(pcfPactMatch[1]);
+    const payload = store.getPcfPayload(supplierId);
+    if (!payload) {
+      return { status: 404, body: { error: 'PCF payload not found', supplierId } };
+    }
+    const supplier = store.getSupplier(supplierId);
+    const mapped = pactMapping.toProductFootprint(payload, supplier);
+    return {
+      status: 200,
+      body: {
+        spec: 'PACT Technical Specifications V3 (github.com/wbcsd/data-exchange-protocol)',
+        note: '此為展示用格式對齊，非官方 PACT Conformance 驗證結果；未涵蓋欄位見 pactGaps。',
+        ...mapped,
+      },
+    };
+  }
+
   if (method === 'GET' && pathname === '/api/agent/status') {
     return { status: 200, body: llm.status() };
+  }
+
+  if (method === 'GET' && pathname === '/api/audit/cloud') {
+    if (!supabaseSync.isConfigured()) {
+      return { status: 200, body: { configured: false } };
+    }
+    try {
+      const events = await supabaseSync.fetchAuditLog({ limit: 50 });
+      // Verify the chain for whichever boot_id the most recent row belongs to (the
+      // chain is scoped per boot_id; older rows in the list may be from earlier runs).
+      const latestBootId = events[0]?.boot_id || null;
+      const brokenEntries = latestBootId ? await supabaseSync.verifyAuditChain(latestBootId) : [];
+      return {
+        status: 200,
+        body: {
+          configured: true,
+          bootId: latestBootId,
+          count: events.length,
+          chainIntact: brokenEntries.length === 0,
+          brokenCount: brokenEntries.length,
+          events,
+        },
+      };
+    } catch (e) {
+      return {
+        status: 200,
+        body: { configured: true, error: e.message || String(e) },
+      };
+    }
   }
 
   const exportDraftMatch = pathname.match(/^\/api\/export\/client-draft\/([^/]+)$/);
@@ -323,6 +373,7 @@ async function handleApiPath(method, pathname, body) {
         decision: decision.decision,
         policyId: decision.policyId,
         reason: decision.reason,
+        reasoningSummary: decision.plainReason,
         argsDigest: digest,
         inputRedacted: { supplierId },
       });
@@ -345,6 +396,8 @@ async function handleApiPath(method, pathname, body) {
       decision: 'ALLOW',
       policyId: 'POL-REV-010',
       reason: 'Data share revoked; pending approvals cancelled.',
+      reasoningSummary:
+        '供應商資料分享已撤銷；該供應商所有待核准的申請已同步作廢，且撤銷後不得再用這批數據申報，需重新索取並取得同意。',
       argsDigest: digest,
       inputRedacted: { supplierId },
     });
@@ -403,6 +456,7 @@ async function handleApiPath(method, pathname, body) {
         decision: 'ALLOW',
         policyId: 'POL-HITL-010',
         reason: 'Approval granted; CBAM commit may proceed.',
+        reasoningSummary: '合規主管已核准這筆待審申請，系統將接著嘗試把碳數據正式寫入 CBAM 申報草稿。',
         approvalId: approval.approvalId,
         argsDigest: store.argsDigest(approval.payload),
       });
@@ -427,6 +481,8 @@ async function handleApiPath(method, pathname, body) {
             decision: 'ALLOW',
             policyId: 'POL-HITL-010',
             reason: 'System committed CBAM draft after human approval.',
+            reasoningSummary:
+              '已依人類核准結果，由系統（非 Agent）將草稿正式寫入內部 CBAM 草稿庫；commit_cbam_draft 這個動作永遠不對 Agent 開放。',
             approvalId: approval.approvalId,
             argsDigest: store.argsDigest(execInput),
           });
@@ -456,6 +512,7 @@ async function handleApiPath(method, pathname, body) {
       decision: 'DENY_POLICY',
       policyId: 'POL-HITL-010',
       reason: 'Approval denied by human.',
+      reasoningSummary: '合規主管否決了這筆待審申請；這批碳數據不會被寫入 CBAM 申報草稿。',
       approvalId: approval.approvalId,
     });
     return {
@@ -478,6 +535,8 @@ async function handleApiPath(method, pathname, body) {
       decision: 'ALLOW',
       policyId: 'POL-REV-001',
       reason: 'Mandate revoked; pending approvals cancelled.',
+      reasoningSummary:
+        '整個 Mandate 授權已被收回；所有待核准申請同步作廢，AI 之後將無法再代表本組織執行任何動作，須重新發授權才能恢復。',
     });
     return {
       status: 200,
@@ -500,6 +559,7 @@ async function handleApiPath(method, pathname, body) {
       decision: 'ALLOW',
       policyId: 'POL-AUTH-002',
       reason: 'Simulated mandate expiry for demo.',
+      reasoningSummary: 'Demo 用途：手動把 Mandate 授權模擬成已過期，用來展示授權過期後的閘門行為（非真實事件）。',
     });
     return { status: 200, body: { mandate } };
   }

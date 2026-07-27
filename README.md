@@ -30,6 +30,14 @@ npm start
 - 中欄可打字跟 Agent 對話；模型**只能提議**工具，放行仍走 `PolicyEngine`
 - **勿把 `.env` 提交進 git**
 
+### 可選：稽核紀錄雙寫進 Supabase（Audit Log 持久化）
+
+V1 預設全記憶體、重啟即重置。若要讓稽核紀錄／核准紀錄／AI 對話跨重啟保存，可選填 `SUPABASE_URL` / `SUPABASE_SERVICE_KEY`（見 `.env.example`）：
+
+1. 到 Supabase 專案的 SQL Editor 執行 `supabase/schema.sql`（建表 + 稽核紀錄雜湊鏈防竄改）
+2. `.env` 填入 `SUPABASE_URL`、`SUPABASE_SERVICE_KEY`（service role key，僅伺服器端使用）
+3. 不裝 `@supabase/supabase-js`，直接用 `fetch` 打 PostgREST，維持零 npm 依賴；未設定時完全不啟用，不影響 Demo
+
 契約煙測：
 
 ```bash

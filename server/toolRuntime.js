@@ -185,6 +185,7 @@ function invokeTool(toolId, cleanInput, actor, approval) {
     decision: decision.decision,
     policyId: decision.policyId,
     reason: decision.reason,
+    reasoningSummary: decision.plainReason,
     approvalId: approvalObj ? approvalObj.approvalId : null,
     argsDigest: digest,
     inputRedacted: {

@@ -1,5 +1,7 @@
 'use strict';
 
+const supabaseSync = require('./supabaseSync');
+
 const MAX_HISTORY = 20;
 
 const sessions = new Map();
@@ -14,11 +16,13 @@ function getSession(sessionId) {
 
 function appendMessage(sessionId, role, content) {
   const s = getSession(sessionId);
-  s.messages.push({ role, content, ts: Date.now() });
+  const message = { role, content, ts: Date.now() };
+  s.messages.push(message);
   if (s.messages.length > MAX_HISTORY) {
     s.messages = s.messages.slice(-MAX_HISTORY);
   }
   s.updatedAt = Date.now();
+  supabaseSync.syncMessage(sessionId, message);
   return s.messages;
 }
 

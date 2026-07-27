@@ -166,6 +166,11 @@
               <button type="button" class="btn btn-ghost" id="btn-revoke">收回授權</button>
               <button type="button" class="btn btn-ghost" id="btn-reset">重置</button>
             </div>
+            <div class="btn-row">
+              <button type="button" class="btn btn-sm btn-ghost" id="btn-pact-preview" title="把上方選取供應商的 PCF 轉成 PACT V3 ProductFootprint 格式預覽（新分頁開啟）">
+                查看 PACT V3 格式預覽
+              </button>
+            </div>
             <div class="action-inbox" id="action-inbox">
               <div class="action-inbox-head">
                 <div class="section-label">收件箱</div>
@@ -212,6 +217,13 @@
         <div class="panel-body">
           <div class="btn-row">
             <button type="button" class="btn btn-sm btn-ghost" id="btn-export-audit">匯出</button>
+          </div>
+          <div class="cloud-audit" id="cloud-audit">
+            <div class="cloud-audit-row">
+              <span class="cloud-audit-badge" id="cloud-audit-badge" data-state="loading">☁ 檢查雲端持久化中…</span>
+              <button type="button" class="btn btn-sm btn-ghost" id="btn-cloud-audit-refresh">重新驗證</button>
+            </div>
+            <ul class="cloud-audit-list" id="cloud-audit-list" hidden></ul>
           </div>
           <ul class="audit-list" id="audit-list">
             <li class="feed-empty">尚無紀錄</li>

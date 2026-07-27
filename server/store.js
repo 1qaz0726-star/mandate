@@ -2,6 +2,7 @@
 
 const crypto = require('crypto');
 const { session, suppliers, pcfPayloads } = require('./fixtures/bundle');
+const supabaseSync = require('./supabaseSync');
 
 function deepClone(obj) {
   return JSON.parse(JSON.stringify(obj));
@@ -135,6 +136,7 @@ function revokeShare(supplierId, reason) {
         decision: 'ALLOW',
         policyId: 'POL-REV-010',
         reason: 'Pending approval cancelled on data share revoke.',
+        reasoningSummary: '這筆待核准申請所屬的供應商資料分享已被撤銷，申請跟著自動作廢，不會再被合規主管核准。',
         approvalId: a.approvalId,
       });
     }
@@ -176,8 +178,15 @@ function appendAudit(partial) {
     argsDigest: partial.argsDigest || null,
     inputHash: partial.inputHash || (partial.argsDigest ? `sha256:${partial.argsDigest}` : null),
     inputRedacted: partial.inputRedacted || null,
+    reasoningSummary: partial.reasoningSummary || null,
+    eventKind: partial.eventKind || 'TOOL_DECISION',
   };
   state.audit.push(event);
+  supabaseSync.syncAuditEvent(event);
+  if (event.approvalId) {
+    const approval = getApproval(event.approvalId);
+    if (approval) supabaseSync.syncApproval(approval);
+  }
   return event;
 }
 
@@ -232,6 +241,7 @@ function revokeMandate(reason) {
         decision: 'ALLOW',
         policyId: 'POL-REV-001',
         reason: 'Pending approval cancelled on mandate revoke.',
+        reasoningSummary: '整個 Mandate 授權已被收回，這筆待核准申請跟著自動作廢，不會再被合規主管核准。',
         approvalId: a.approvalId,
       });
     }

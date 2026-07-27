@@ -96,9 +96,14 @@
 - V1：**全 fixture**（合成供應商／PCF payload／CBAM draft store）  
 - 可接路徑：Mandate／Approval／Audit／PcfPayload 的 **schema** 預留接供應商 API、簽核 webhook、內部 CBAM 草稿庫  
 - 勿對外宣稱「已接歐盟 CBAM registry」或「已驗證真實第三方 PCF」
+- 稽核紀錄／核准紀錄／AI 對話：可選填 Supabase 雙寫持久化（見 `supabase/schema.sql`、README「可選：稽核紀錄雙寫進 Supabase」段落）；未設定 `SUPABASE_URL`/`SUPABASE_SERVICE_KEY` 時維持 V1 原本的全記憶體行為，核心 Policy Engine 判斷邏輯與 fixture 架構不受影響
 
 ---
 
 ## 9. 變更本檔的條件
 
 僅當主辦規則衝突、或隊長明確宣告改題時，才可修訂本檔；修訂須留日期與原因一行。
+
+**修訂記錄**：
+
+- 2026-07-27：新增稽核紀錄／核准紀錄／AI 對話的 Supabase 選填雙寫持久化（`server/supabaseSync.js`、`supabase/schema.sql`）。原因：官方六信任要點之一的 Audit Log 屬實際評分項目，V1 全記憶體儲存重啟即消失，無法對評審展示「可追蹤」的持久性與防竄改（雜湊鏈）。此為**附加雙寫**，不改動核心 Policy Engine 判斷邏輯、不觸碰第 7 節任何排除項目、未設金鑰時完全不啟用；為使用者主動要求，非 AI 建議。
