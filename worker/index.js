@@ -1,4 +1,5 @@
 const { handleFetchRequest } = require('../server/apiFetch');
+const supabaseSync = require('../server/supabaseSync');
 
 function applyWorkerEnv(env) {
   if (!env) return;
@@ -10,10 +11,17 @@ function applyWorkerEnv(env) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     applyWorkerEnv(env);
     const apiRes = await handleFetchRequest(request);
-    if (apiRes) return apiRes;
+    if (apiRes) {
+      // Fire-and-forget Supabase writes triggered while handling this request are not
+      // awaited (see supabaseSync.js) — without this, Cloudflare can tear down the
+      // isolate as soon as the response below is returned, killing those writes
+      // mid-flight on fast requests that don't otherwise keep the isolate busy.
+      ctx.waitUntil(supabaseSync.waitForPending());
+      return apiRes;
+    }
     return env.ASSETS.fetch(request);
   },
 };

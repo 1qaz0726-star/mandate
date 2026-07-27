@@ -39,6 +39,26 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Cloudflare Workers can tear down a request's execution context as soon as the
+// response is sent — an un-awaited fire-and-forget fetch() can get cut off mid-flight
+// if the response returns first (this bit us: fast tool calls with no LLM roundtrip
+// returned before the Supabase write finished, so nothing landed). Track every
+// in-flight write here; worker/index.js hands the drained promise to `ctx.waitUntil()`
+// so Cloudflare keeps the isolate alive until writes actually finish. On local Node
+// (server/index.js has no waitUntil concept) this tracking is simply unused — pending
+// promises keep running on the event loop regardless, same as before.
+const pending = new Set();
+
+function track(promise) {
+  pending.add(promise);
+  promise.finally(() => pending.delete(promise));
+  return promise;
+}
+
+function waitForPending() {
+  return Promise.allSettled(Array.from(pending));
+}
+
 // One retry after a short delay: a cold connection to Supabase can transiently 401
 // (observed: "JWT issued at future") or 5xx, on both writes and reads. Used by
 // everything below so the "雲端稽核" panel doesn't flake on a click during a demo.
@@ -79,23 +99,28 @@ async function requestJson(path, options = {}) {
 
 // Best-effort: failures are swallowed (after one retry) and only logged — callers never
 // wait on this or see it throw, since a missing audit row must never block the Demo.
-async function postRow(table, row, { onConflict } = {}) {
+// The work itself is still tracked (see `pending` above) so Workers can be told to keep
+// the isolate alive until it's actually done, even though callers don't await this.
+function postRow(table, row, { onConflict } = {}) {
   if (!isConfigured()) return;
   const qs = onConflict ? `?on_conflict=${onConflict}` : '';
-  try {
-    await withRetry(() =>
-      requestJson(`/rest/v1/${table}${qs}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Prefer: onConflict ? 'resolution=merge-duplicates,return=minimal' : 'return=minimal',
-        },
-        body: JSON.stringify(row),
-      })
-    );
-  } catch (e) {
-    console.warn(`[supabaseSync] ${table} insert failed after retry:`, e && e.message ? e.message : e);
-  }
+  const work = (async () => {
+    try {
+      await withRetry(() =>
+        requestJson(`/rest/v1/${table}${qs}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Prefer: onConflict ? 'resolution=merge-duplicates,return=minimal' : 'return=minimal',
+          },
+          body: JSON.stringify(row),
+        })
+      );
+    } catch (e) {
+      console.warn(`[supabaseSync] ${table} insert failed after retry:`, e && e.message ? e.message : e);
+    }
+  })();
+  track(work);
 }
 
 function syncAuditEvent(event) {
@@ -195,6 +220,7 @@ module.exports = {
   syncMessage,
   fetchAuditLog,
   verifyAuditChain,
+  waitForPending,
 };
 
 // Lazy getter so `supabaseSync.BOOT_ID` still works as a plain property read at call
