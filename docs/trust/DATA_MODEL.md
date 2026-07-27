@@ -486,8 +486,42 @@ PcfPayload.shareRevoked → Staging 不可用 → 擋 submit/commit
 
 ---
 
-## 12. 版本
+## 12. PACT V3 對齊（PCF 格式）
+
+`server/pactMapping.js` 把 `PcfPayload`（見第 4 節欄位定義）轉成 [PACT Technical Specifications V3](https://github.com/wbcsd/data-exchange-protocol)（WBCSD Pathfinder Framework）的 `ProductFootprint` 物件，供 `GET /api/pcf/:supplierId/pact` 讀取、「詳細控制」面板「查看 PACT V3 格式預覽」按鈕開新分頁展示。**純附加、唯讀**：不改動 `pcfCheck.js` 的必填欄位（`tCO2e`／`unit`／`method`／`boundary`／`period`／`supplierId`）或任何政策判斷邏輯。
+
+### 欄位對照
+
+| Mandate 欄位 | PACT V3 欄位 | 備註 |
+|------|------|------|
+| `supplierId` + supplier `orgName` | `companyName`／`companyIds` | `companyIds` 用 `urn:mandate:supplier:<id>` 佔位，非真實可解析的公司識別碼（如 LEI／D-U-N-S） |
+| `product` | `productDescription`／`productNameCompany` | — |
+| `cnCode` | `productClassifications` | 用 `urn:pact:productclassification:cncode:<碼>`，非 PACT 官方列舉的分類法 |
+| `period`（`YYYY-MM-DD/YYYY-MM-DD`） | `pcf.referencePeriodStart`／`referencePeriodEnd` | 直接切開轉 ISO 8601 |
+| `tCO2e` | `pcf.pcfExcludingBiogenicUptake`／`pcfIncludingBiogenicUptake`／`fossilGhgEmissions` | 同一數字填三個欄位，見下方缺口 |
+| `method`（如 `"ISO14067"`） | `pcf.crossSectoralStandards` | 剛好跟 PACT 列舉值字串相同，直接對應 |
+| `boundary`、`verificationStatus`、`verificationReportId` | `comment`（自由文字） | PACT 沒有對應的結構化欄位，放進官方允許的 `comment` 欄位並標明來源 |
+| `qualityTier`、`emissionPerUnit` | `mandateExtension`（非官方 `DataModelExtension` 包裝） | Mandate 內部品質閘資料，明確標示非 PACT 標準格式 |
+
+### 已知缺口（`pactGaps`，隨每次回應一起吐出，不藏起來）
+
+PACT V3 的 `CarbonFootprint` 有 11 個必填欄位；Mandate 目前的資料模型能誠實對應到其中約一半，以下是做不到、直接承認的部分：
+
+| PACT 必填欄位 | 缺口原因 |
+|------|------|
+| `declaredUnitOfMeasurement`／`declaredUnitAmount`／`productMassPerDeclaredUnit` | Mandate 只記「這批貨總共排多少 tCO2e」，沒有另外要求供應商回報「每宣告單位的產品數量」——PACT 要求兩者分開申報 |
+| `pcfExcludingBiogenicUptake` vs. `pcfIncludingBiogenicUptake` | Mandate 的 `tCO2e` 是單一總數，沒有拆分生質碳吸收前後差異 |
+| `fossilCarbonContent` | PACT 要求申報化石碳含量（質量），Mandate 不收集 |
+| `ipccCharacterizationFactors` | PACT 要求標明採用的 IPCC 評估報告版本，Mandate 不記錄 |
+| `exemptedEmissionsPercent` | PACT 要求申報排除在 PCF 外的排放百分比，Mandate 不要求供應商揭露 |
+
+**刻意選擇誠實列缺口，而不是編造看起來合理的數字填滿這些欄位**——這跟 Mandate 產品本身「拒收看起來完整但實際不合格的數據」的立場一致；用假數字填 PACT 格式會是同一種問題的另一種形式。
+
+---
+
+## 13. 版本
 
 | 版本 | 日期 | 說明 |
 |------|------|------|
 | V1 | 2026-07-20 | PcfPayload／Staging／CbamDraft／shareRevoked |
+| V1.1 | 2026-07-27 | 新增 PACT V3 格式對齊（`pactMapping.js`），詳見第 12 節 |

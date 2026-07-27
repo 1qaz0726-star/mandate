@@ -136,6 +136,7 @@ function revokeShare(supplierId, reason) {
         decision: 'ALLOW',
         policyId: 'POL-REV-010',
         reason: 'Pending approval cancelled on data share revoke.',
+        reasoningSummary: '這筆待核准申請所屬的供應商資料分享已被撤銷，申請跟著自動作廢，不會再被合規主管核准。',
         approvalId: a.approvalId,
       });
     }
@@ -240,6 +241,7 @@ function revokeMandate(reason) {
         decision: 'ALLOW',
         policyId: 'POL-REV-001',
         reason: 'Pending approval cancelled on mandate revoke.',
+        reasoningSummary: '整個 Mandate 授權已被收回，這筆待核准申請跟著自動作廢，不會再被合規主管核准。',
         approvalId: a.approvalId,
       });
     }

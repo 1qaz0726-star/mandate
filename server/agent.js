@@ -79,6 +79,7 @@ async function runAgentTurn({ message, sessionId = 'default', maxSteps = DEFAULT
         decision: 'ERROR',
         policyId: null,
         reason: e.message || String(e),
+        reasoningSummary: `AI 呼叫語言模型時發生錯誤（可能逾時、額度用盡或服務異常），本輪沒有提議任何工具動作，未影響任何已核准的資料或草稿：${e.message || String(e)}`,
         eventKind: 'LLM_ERROR',
       });
       return {

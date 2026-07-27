@@ -168,7 +168,8 @@ function syncMessage(sessionId, message) {
 // real write. Global "latest N" makes the panel reliably show real data on Workers too.
 async function fetchAuditLog({ bootId, limit = 50 } = {}) {
   const qs = new URLSearchParams({
-    select: 'id,boot_id,audit_event_id,ts,tool_name,decision,policy_id,actor_type,event_kind,entry_hash',
+    select:
+      'id,boot_id,audit_event_id,ts,tool_name,decision,policy_id,actor_type,event_kind,reasoning_summary,entry_hash',
     order: 'id.desc',
     limit: String(limit),
   });

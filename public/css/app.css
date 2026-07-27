@@ -810,7 +810,7 @@ button {
   margin: var(--space-2) 0 0;
   padding: var(--space-2) 0 0;
   border-top: 1px dashed var(--line);
-  max-height: 160px;
+  max-height: 260px;
   overflow-y: auto;
 }
 
@@ -818,10 +818,24 @@ button {
   font-family: "IBM Plex Mono", "Consolas", monospace;
   font-size: 10.5px;
   color: var(--ink-muted);
-  padding: 2px 0;
+  padding: 4px 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  border-bottom: 1px solid var(--line);
+}
+
+.cloud-audit-list li:last-child {
+  border-bottom: none;
+}
+
+.cloud-audit-reason {
+  margin-top: 2px;
+  font-family: "IBM Plex Sans", "Helvetica Neue", sans-serif;
+  font-size: 11px;
+  color: var(--ink);
+  white-space: normal;
+  line-height: 1.4;
 }
 
 /* ── Demo runner strip ── */

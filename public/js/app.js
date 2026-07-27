@@ -1083,7 +1083,11 @@ async function loadCloudAudit() {
       list.innerHTML = (data.events || [])
         .map((ev) => {
           const hash = (ev.entry_hash || "").slice(0, 12);
-          return `<li>${escapeHtml(formatTs(ev.ts))} · ${escapeHtml(ev.tool_name || "—")} · ${escapeHtml(ev.decision || "—")} · ${escapeHtml(hash)}…</li>`;
+          const meta = `${escapeHtml(formatTs(ev.ts))} · ${escapeHtml(ev.tool_name || "—")} · ${escapeHtml(ev.decision || "—")} · ${escapeHtml(hash)}…`;
+          const summary = ev.reasoning_summary
+            ? `<div class="cloud-audit-reason">${escapeHtml(ev.reasoning_summary)}</div>`
+            : "";
+          return `<li>${meta}${summary}</li>`;
         })
         .join("");
       list.hidden = !cloudAuditListOpen;
@@ -1150,6 +1154,14 @@ function bind() {
   $("btn-revoke-share")?.addEventListener("click", revokeShare);
   $("btn-revoke")?.addEventListener("click", revokeMandate);
   $("btn-reset")?.addEventListener("click", resetDemo);
+  $("btn-pact-preview")?.addEventListener("click", () => {
+    const sid = selectedSupplierId();
+    if (!sid) {
+      showError("請先在上方選一家供應商");
+      return;
+    }
+    window.open(`${API}/pcf/${encodeURIComponent(sid)}/pact`, "_blank");
+  });
   $("dash-btn-reset-hero")?.addEventListener("click", resetDemo);
   $("dash-next-body")?.addEventListener("click", (ev) => {
     if (ev.target?.id === "dash-btn-reset") resetDemo();
