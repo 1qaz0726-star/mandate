@@ -25,6 +25,8 @@
 
 `server/agent.js` 第 45-46 行曾經有一個逗號打成分號的語法錯誤，導致 `npm start` 直接 crash（`npm run smoke` 測不到這個路徑，會誤以為沒事）。如果又遇到啟動就 crash，先檢查這類低級語法錯誤，而不是假設是邏輯問題。
 
+**「AI 自動演三幕」曾經很容易卡住（2026-07-28 發現並修好）**：`runAgentTurn` 每一步都靠 LLM 自己判斷「這樣算不算做完」再決定要不要繼續呼叫下一個工具——gpt-4o-mini 常常索取/取回完資料就提早回文字總結，不會繼續往下呼叫 `ingest_pcf_payload`／`submit_cbam_draft`，導致單一 Agent 對話卡在第一兩步。實測 4 次一鍵演示只有 1 次完整跑完。已加兩層修正（都在 `runAgentTurn` 內、`policy.js` 完全沒動）：①LLM 過早回 `tool=null` 時，最多給 2 次「繼續完成」的強制提醒才真的收手；②偵測到 LLM 想跳過 `ingest_pcf_payload` 直接呼叫 `submit_cbam_draft`（且該供應商尚未入庫、分享也還沒撤銷）時，攔下來改提醒先做品質檢查。**這只是讓 Demo 順序更穩定的提示工程，不是新的權限判斷**——不管 LLM 提議什麼順序，最終 ALLOW/DENY/PENDING_HUMAN 永遠由 `policy.js` 决定；已用 18 次 API 層級重跑（含撤銷後再申請）驗證過三幕最終判定 100% 正確。
+
 ## Demo 三幕的 policyId 是穩定契約
 
 `POL-CARB-001`（拒收缺欄位）、`POL-HITL-010`（送審）、`POL-REV-010`（撤銷後拒用）這幾個 ID 會被 Demo 逐字稿、簡報、Governance Gap Memo 交叉引用。改規則邏輯可以，但**不要隨意改這些 ID 字串**，否則文件跟畫面會對不上。

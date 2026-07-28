@@ -53,13 +53,42 @@ async function runAgentTurn({ message, sessionId = 'default', maxSteps = DEFAULT
   let lastReply = '';
   let pendingApproval = null;
   let stopReason = null;
+  let corrections = 0;
+  let overrideMessage = null;
+  const MAX_CORRECTIONS = 2;
+
+  function isSupplierStagedUsable(session, supplierId) {
+    if (!supplierId || !Array.isArray(session.staging)) return false;
+    const entry = session.staging.find((s) => s.supplierId === supplierId);
+    return !!(entry && !entry.revoked);
+  }
+
+  function isSupplierShareRevoked(session, supplierId) {
+    if (!supplierId || !Array.isArray(session.revokedShares)) return false;
+    return session.revokedShares.includes(supplierId);
+  }
+
+  function buildNoToolNudge() {
+    const done = new Set(
+      steps.filter((s) => s.tool && s.toolResult?.decision === 'ALLOW').map((s) => s.tool)
+    );
+    const STANDARD_SEQUENCE = ['request_emissions', 'fetch_supplier_response', 'ingest_pcf_payload', 'submit_cbam_draft'];
+    const nextInSequence = STANDARD_SEQUENCE.find((t) => !done.has(t));
+    const sequenceHint =
+      done.size > 0
+        ? `目前已成功完成：${Array.from(done).join('、')}。標準流程順序固定是 ${STANDARD_SEQUENCE.join(' → ')}，請照順序呼叫下一個還沒做過的步驟${
+            nextInSequence ? `（也就是 ${nextInSequence}）` : ''
+          }。`
+        : '';
+    return `你上一步沒有呼叫任何工具就打算結束，但使用者要求的任務通常需要連續呼叫多個工具才算走到最終結果（ALLOW／PENDING_HUMAN／DENY 其中之一）。${sequenceHint}除非真的已經沒有下一步可做，否則請不要只回文字，直接呼叫下一個必要的工具繼續執行。`;
+  }
 
   for (let i = 0; i < maxSteps; i += 1) {
     const context = buildContext();
     let proposal;
     try {
       proposal = await llm.propose({
-        message: i === 0 ? message : '繼續完成上一個任務（若已完成請 tool=null 並總結）。',
+        message: i === 0 ? message : overrideMessage || '繼續完成上一個任務（若已完成請 tool=null 並總結）。',
         history: history.concat(
           steps.flatMap((s) => [
             { role: 'assistant', content: JSON.stringify({ reply: s.reply, tool: s.tool, args: s.args }) },
@@ -90,6 +119,7 @@ async function runAgentTurn({ message, sessionId = 'default', maxSteps = DEFAULT
       };
     }
 
+    overrideMessage = null;
     lastReply = proposal.reply || '';
     const step = {
       step: i + 1,
@@ -101,6 +131,11 @@ async function runAgentTurn({ message, sessionId = 'default', maxSteps = DEFAULT
 
     if (!proposal.tool) {
       steps.push(step);
+      if (corrections < MAX_CORRECTIONS && steps.length < maxSteps) {
+        corrections += 1;
+        overrideMessage = buildNoToolNudge();
+        continue;
+      }
       stopReason = 'no_tool';
       break;
     }
@@ -109,6 +144,30 @@ async function runAgentTurn({ message, sessionId = 'default', maxSteps = DEFAULT
     if (cleanInput.tCO2e != null) cleanInput.tCO2e = Number(cleanInput.tCO2e);
     if (cleanInput.emissionPerUnit != null) {
       cleanInput.emissionPerUnit = Number(cleanInput.emissionPerUnit);
+    }
+
+    if (proposal.tool === 'submit_cbam_draft') {
+      const sid = cleanInput.supplierId;
+      const alreadyIngestedThisTurn = steps.some(
+        (s) => s.tool === 'ingest_pcf_payload' && s.toolResult?.decision === 'ALLOW'
+      );
+      const session0 = store.getSession();
+      const stagedNow = isSupplierStagedUsable(session0, sid);
+      const shareRevoked = isSupplierShareRevoked(session0, sid);
+      if (
+        sid &&
+        !stagedNow &&
+        !shareRevoked &&
+        !alreadyIngestedThisTurn &&
+        corrections < MAX_CORRECTIONS &&
+        steps.length < maxSteps
+      ) {
+        corrections += 1;
+        step.toolResult = { skipped: true, reason: 'redirected_to_ingest_first' };
+        steps.push(step);
+        overrideMessage = `供應商 ${sid} 尚未通過品質檢查入庫（還沒有可用的暫存 PCF），不能跳過步驟直接申請寫入 CBAM 草稿。請先呼叫 ingest_pcf_payload（supplierId="${sid}"）完成品質檢查，通過後才呼叫 submit_cbam_draft。`;
+        continue;
+      }
     }
 
     if (proposal.tool === 'ingest_pcf_payload') {
