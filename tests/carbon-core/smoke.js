@@ -116,8 +116,11 @@ const canonicalEntities = {
     policyProfileId: 'CBAM-STEEL-2026-v1', evaluatedAt: '2026-08-24T09:00:00Z', inputHash: 'demo-hash',
   },
   RiskReport: {
+    reportId: 'risk_demo', caseId: 'CASE-2026-001', entries: [],
     findings: [], missingEvidence: [], discrepancies: [], citations: [],
-    modelVersion: 'demo', promptVersion: 'demo', reviewStatus: 'human-review-required',
+    summary: { facts: [], openIssues: [], nextActions: [], citations: [] },
+    modelVersion: 'demo', promptVersion: 'demo', timestamp: '2026-08-24T09:00:00Z',
+    reviewStatus: 'HUMAN_REVIEW_REQUIRED',
   },
   CalculationReceipt: normalReceipt,
 };

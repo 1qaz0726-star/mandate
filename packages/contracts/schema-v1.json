@@ -257,19 +257,114 @@
       }
     },
 
+    "AgentReasonCode": {
+      "type": "string",
+      "description": "Evidence Agent 專用固定 reason/rule code；須與 packages/contracts/enums.js 的 AGENT_REASON_CODE 同步。",
+      "enum": [
+        "PROMPT_INJECTION_DETECTED", "UNSAFE_DOCUMENT_TEXT", "EXTRACTION_TRUNCATED",
+        "EVIDENCE_CONTENT_UNAVAILABLE", "EVIDENCE_JSON_INVALID", "INVALID_EVIDENCE_PERIOD",
+        "EVIDENCE_MISSING", "EVIDENCE_PERIOD_INCOMPLETE", "UNIT_AMBIGUOUS",
+        "CROSS_TABLE_CHECK_SKIPPED", "ELECTRICITY_INTENSITY_OUT_OF_RANGE",
+        "FUEL_INTENSITY_OUT_OF_RANGE", "PRECURSOR_RATIO_OUT_OF_RANGE", "EXTRACTED_VALUE"
+      ]
+    },
+
     "RiskReport": {
       "type": "object",
-      "description": "文件 p.7——Phase 4（Evidence Agent）才會實際用到，先卡欄位",
+      "description": "文件 p.7、p.14 與 Day 4 p.10 的 Evidence Agent 固定輸出；Agent 只提供風險預審，不產生 Gate decision。",
       "required": ["findings", "missingEvidence", "discrepancies", "citations", "modelVersion", "promptVersion", "reviewStatus"],
       "additionalProperties": true,
       "properties": {
-        "findings": { "type": "array" },
-        "missingEvidence": { "type": "array" },
-        "discrepancies": { "type": "array" },
-        "citations": { "type": "array" },
+        "reportId": { "type": "string", "description": "NOT IN SPEC：Demo store 的衍生報告識別碼。" },
+        "caseId": { "type": "string", "description": "NOT IN SPEC：讓衍生報告綁定案件的向後相容擴充。" },
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["field", "value", "unit", "sourceFile", "sourcePage", "confidence", "humanConfirmed"],
+            "properties": {
+              "field": { "type": "string" },
+              "value": { "type": ["string", "number", "boolean", "null"] },
+              "unit": { "type": ["string", "null"] },
+              "sourceFile": { "type": "string" },
+              "sourcePage": { "type": "integer" },
+              "confidence": { "type": "number" },
+              "humanConfirmed": { "type": "boolean" },
+              "eligibleForCalculation": { "type": "boolean" },
+              "candidateUnits": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        },
+        "findings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["reasonCode", "severity", "message"],
+            "properties": {
+              "reasonCode": { "$ref": "#/definitions/AgentReasonCode" },
+              "severity": { "type": "string", "enum": ["info", "warning", "high"] },
+              "message": { "type": "string" }
+            }
+          }
+        },
+        "missingEvidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["requiredEvidence", "coveredPeriod", "missingPeriod", "requestedAction"],
+            "properties": {
+              "requiredEvidence": { "$ref": "#/definitions/EvidenceType" },
+              "coveredPeriod": { "type": ["string", "null"] },
+              "missingPeriod": { "type": "string" },
+              "requestedAction": { "type": "string" }
+            }
+          }
+        },
+        "discrepancies": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["ruleId", "leftValue", "rightValue", "difference", "severity", "possibleExplanations"],
+            "properties": {
+              "ruleId": { "$ref": "#/definitions/AgentReasonCode" },
+              "leftValue": { "type": ["string", "number", "null"] },
+              "rightValue": { "type": ["string", "number", "null"] },
+              "difference": { "type": ["string", "number", "null"] },
+              "severity": { "type": "string", "enum": ["info", "warning", "high"] },
+              "possibleExplanations": { "type": "array", "items": { "type": "string" } },
+              "leftCitation": { "type": "integer" },
+              "rightCitation": { "type": "integer" }
+            }
+          }
+        },
+        "citations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["reasonCode", "sourceFile", "sourcePage"],
+            "properties": {
+              "reasonCode": { "$ref": "#/definitions/AgentReasonCode" },
+              "sourceFile": { "type": "string" },
+              "sourcePage": { "type": "integer" }
+            }
+          }
+        },
+        "summary": {
+          "type": "object",
+          "required": ["facts", "openIssues", "nextActions", "citations"],
+          "properties": {
+            "facts": { "type": "array", "items": { "type": "string" } },
+            "openIssues": { "type": "array", "items": { "type": "string" } },
+            "nextActions": { "type": "array", "items": { "type": "string" } },
+            "citations": { "type": "array", "items": { "type": "integer" } }
+          }
+        },
         "modelVersion": { "type": "string" },
         "promptVersion": { "type": "string" },
-        "reviewStatus": { "type": "string" }
+        "timestamp": { "type": "string", "format": "date-time" },
+        "reviewStatus": { "type": "string", "enum": ["HUMAN_REVIEW_REQUIRED", "READY_FOR_HUMAN_REVIEW"] },
+        "reviewedBy": { "type": ["string", "null"] },
+        "reviewedAt": { "type": ["string", "null"], "format": "date-time" }
       }
     },
 

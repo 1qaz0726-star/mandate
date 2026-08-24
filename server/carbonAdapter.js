@@ -153,6 +153,7 @@ function unavailableAdapters() {
     agent: {
       status: 'unavailable',
       verification: 'not_verified',
+      execution: 'not_executed',
       demoOnly: true,
     },
     proof: {

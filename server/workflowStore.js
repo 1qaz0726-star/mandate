@@ -1,6 +1,7 @@
 'use strict';
 
 const normalFixture = require('../fixtures/normal.json');
+const { validateCanonical } = require('../packages/contracts/validator');
 const { buildCaseCarbon, unavailableAdapters } = require('./carbonAdapter');
 
 const DEMO_CASE_ID = 'CASE-2026-001';
@@ -9,6 +10,7 @@ const READY_DISCLAIMER =
 const SERVICE_NAMES = new Set(['agent', 'proof', 'gate']);
 const SERVICE_STATUSES = new Set(['available', 'unavailable', 'error']);
 const SERVICE_VERIFICATIONS = new Set(['verified', 'not_verified', 'failed']);
+const SERVICE_EXECUTIONS = new Set(['not_executed', 'executed', 'failed']);
 const CASE_STATUSES = new Set([
   'DRAFT',
   'READY_FOR_VERIFIER',
@@ -78,6 +80,7 @@ function createInitialState() {
     evidence: [],
     grants: [],
     findings: [],
+    riskReports: new Map(),
     audit: [],
     services: unavailableAdapters(),
     sequences: {
@@ -246,6 +249,23 @@ function listFindings(caseId) {
   return clone(state.findings.filter((item) => item.caseId === caseId));
 }
 
+function setRiskReport(caseId, report) {
+  if (!getCase(caseId) || !report || typeof report !== 'object' || report.caseId !== caseId) {
+    throw new TypeError('Invalid case risk report.');
+  }
+  const validation = validateCanonical('RiskReport', report);
+  if (!validation.valid) {
+    throw new TypeError('Invalid canonical RiskReport.');
+  }
+  state.riskReports.set(caseId, clone(report));
+  return getRiskReport(caseId);
+}
+
+function getRiskReport(caseId) {
+  const report = state.riskReports.get(caseId);
+  return report ? clone(report) : null;
+}
+
 function appendAudit(partial) {
   state.sequences.audit += 1;
   const event = {
@@ -259,6 +279,10 @@ function appendAudit(partial) {
     targetId: partial.targetId || null,
     result: partial.result,
     reasonCode: partial.reasonCode || null,
+    ...(partial.reportId ? { reportId: partial.reportId } : {}),
+    ...(partial.modelVersion ? { modelVersion: partial.modelVersion } : {}),
+    ...(partial.counts ? { counts: clone(partial.counts) } : {}),
+    ...(partial.reasonCodes ? { reasonCodes: clone(partial.reasonCodes) } : {}),
     demoOnly: true,
   };
   state.audit.push(event);
@@ -279,6 +303,7 @@ function validateServicePatch(name, patch) {
     'checks',
     'reasonCodes',
     'inputHash',
+    'execution',
   ]);
   if (Object.keys(patch).some((key) => !allowed.has(key))) {
     throw new TypeError('Invalid trust service patch.');
@@ -293,6 +318,7 @@ function validateServicePatch(name, patch) {
     throw new TypeError('Invalid trust service verification.');
   }
   if (
+    name !== 'agent' &&
     patch.status === 'available' &&
     patch.verification !== undefined &&
     patch.verification === 'not_verified'
@@ -318,6 +344,9 @@ function validateServicePatch(name, patch) {
   ) {
     throw new TypeError('Invalid trust service input hash.');
   }
+  if (patch.execution !== undefined && !SERVICE_EXECUTIONS.has(patch.execution)) {
+    throw new TypeError('Invalid trust service execution.');
+  }
 }
 
 function setServiceStatus(name, patch) {
@@ -326,6 +355,9 @@ function setServiceStatus(name, patch) {
   const next = { ...current, ...clone(patch), demoOnly: true };
   if (next.verification === 'verified' && next.status !== 'available') {
     throw new TypeError('Verified trust service must be available.');
+  }
+  if (name === 'agent' && next.verification === 'verified') {
+    throw new TypeError('Evidence Agent execution must not be marked verified.');
   }
   state.services[name] = next;
   return clone(next);
@@ -365,6 +397,7 @@ module.exports = {
   getGrant,
   getGrantByTokenHash,
   getInstallationYear,
+  getRiskReport,
   getServices,
   listAudit,
   listCases,
@@ -375,6 +408,7 @@ module.exports = {
   revokeGrant,
   setCarbon,
   setCaseWorkflow,
+  setRiskReport,
   setServiceStatus,
   setTrustServices,
 };

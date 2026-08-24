@@ -7,8 +7,10 @@ const {
   stableError,
 } = require('./carbonAdapter');
 const trustAdapter = require('./trustAdapter');
+const agentAdapter = require('./agentAdapter');
 
 const MAX_EVIDENCE_BYTES = 512 * 1024;
+const MAX_EVIDENCE_PER_CASE = 16;
 const MAX_GRANT_MS = 5 * 60 * 1000;
 const ALLOWED_MEDIA_TYPES = new Set([
   'application/pdf',
@@ -23,6 +25,12 @@ const REQUIRED_EVIDENCE_TYPES = new Set([
   'production_report',
   'precursor_list',
 ]);
+
+function isIsoDate(value) {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
 
 function ok(status, body) {
   return { status, body };
@@ -256,9 +264,31 @@ function verifierAnnualSummary(annual) {
   return summary;
 }
 
+function agentSafeSummary(report) {
+  if (!report) return null;
+  const reasonCodes = [...new Set(report.findings.map((finding) => finding.reasonCode))];
+  return {
+    reportId: report.reportId,
+    modelVersion: report.modelVersion,
+    timestamp: report.timestamp,
+    reviewStatus: report.reviewStatus,
+    counts: {
+      findings: report.findings.length,
+      missingEvidence: report.missingEvidence.length,
+      discrepancies: report.discrepancies.length,
+      openIssues: report.summary.openIssues.length,
+    },
+    reasonCodes,
+    nextActions: reasonCodes.length
+      ? ['請由供應商與查驗員依風險代碼完成確認或補件。']
+      : ['可交由查驗員進行後續專業檢視。'],
+  };
+}
+
 function maskCase(caseRecord, actor, detail = false) {
   const carbon = workflowStore.getCarbon(caseRecord.caseId);
   const evidence = workflowStore.listEvidence(caseRecord.caseId);
+  const riskReport = workflowStore.getRiskReport(caseRecord.caseId);
   const base = {
     caseId: caseRecord.caseId,
     title: caseRecord.title,
@@ -287,6 +317,14 @@ function maskCase(caseRecord, actor, detail = false) {
         shipments: outwardShipments(carbon.shipments),
       },
       evidence: evidence.map(supplierEvidence),
+      riskReport,
+      riskReportDisclosure: riskReport
+        ? {
+            kind: 'DERIVED_ANALYSIS',
+            vaultOriginal: false,
+            readAuditSideEffect: false,
+          }
+        : null,
       services: workflowStore.getServices(),
     };
   }
@@ -302,6 +340,7 @@ function maskCase(caseRecord, actor, detail = false) {
         confirmedCount: evidence.filter((item) => item.humanConfirmed).length,
       },
       evidence: evidence.map(importerEvidence),
+      agentSummary: agentSafeSummary(riskReport),
       services: workflowStore.getServices(),
     };
   }
@@ -312,6 +351,14 @@ function maskCase(caseRecord, actor, detail = false) {
     shipments: outwardShipments(carbon.shipments),
     evidenceIndex: evidence.map((item) => evidenceMetadata(item, true)),
     findings: workflowStore.listFindings(caseRecord.caseId),
+    riskReport,
+    riskReportDisclosure: riskReport
+      ? {
+          kind: 'DERIVED_ANALYSIS',
+          vaultOriginal: false,
+          readAuditSideEffect: false,
+        }
+      : null,
     services: workflowStore.getServices(),
   };
 }
@@ -384,7 +431,7 @@ function randomToken() {
   return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
 }
 
-function audit(actor, action, targetType, targetId, result, reasonCode, caseId) {
+function audit(actor, action, targetType, targetId, result, reasonCode, caseId, metadata = {}) {
   return workflowStore.appendAudit({
     actorId: actor.actorId,
     role: actor.role,
@@ -394,7 +441,74 @@ function audit(actor, action, targetType, targetId, result, reasonCode, caseId) 
     result,
     reasonCode,
     caseId,
+    ...metadata,
   });
+}
+
+function analyzeCase(actor, caseId) {
+  const scope = requireCase(actor, caseId, 'Supplier');
+  if (scope.error) return scope.error;
+  try {
+    const report = agentAdapter.analyzeCase(caseId);
+    workflowStore.setRiskReport(caseId, report);
+    const reasonCodes = [...new Set(report.findings.map((finding) => finding.reasonCode))];
+    workflowStore.setServiceStatus('agent', {
+      status: 'available',
+      verification: 'not_verified',
+      execution: 'executed',
+      checks: [{ name: 'analysis_executed', status: 'pass' }],
+      reasonCodes,
+    });
+    audit(
+      actor,
+      'EVIDENCE_AGENT_ANALYZE',
+      'risk_report',
+      report.reportId,
+      'ALLOW',
+      reasonCodes[0] || null,
+      caseId,
+      {
+        reportId: report.reportId,
+        modelVersion: report.modelVersion,
+        counts: {
+          entries: report.entries.length,
+          findings: report.findings.length,
+          missingEvidence: report.missingEvidence.length,
+          discrepancies: report.discrepancies.length,
+        },
+        reasonCodes,
+      }
+    );
+    return ok(200, {
+      report,
+      service: workflowStore.getServices().agent,
+      caseStatusUnchanged: scope.caseRecord.status,
+      demoOnly: true,
+    });
+  } catch (error) {
+    const stable = agentAdapter.stableAgentError(error);
+    workflowStore.setServiceStatus('agent', {
+      status: 'error',
+      verification: 'failed',
+      execution: 'failed',
+      checks: [{ name: 'analysis_executed', status: 'fail' }],
+      reasonCodes: [stable.code],
+    });
+    audit(
+      actor,
+      'EVIDENCE_AGENT_ANALYZE',
+      'risk_report',
+      null,
+      'ERROR',
+      stable.code,
+      caseId,
+      {
+        counts: { entries: 0, findings: 0, missingEvidence: 0, discrepancies: 0 },
+        reasonCodes: [stable.code],
+      }
+    );
+    return fail(422, stable.code, stable.message, stable.details, stable.retryable);
+  }
 }
 
 function validateEvidenceInput(body) {
@@ -437,6 +551,17 @@ function validateEvidenceInput(body) {
       );
     }
   }
+  if (
+    !isIsoDate(metadata.coveredFrom) ||
+    !isIsoDate(metadata.coveredTo) ||
+    metadata.coveredFrom > metadata.coveredTo
+  ) {
+    throw new WorkflowAdapterError(
+      'INVALID_EVIDENCE_PERIOD',
+      'coveredFrom/coveredTo 必須是有效 ISO date，且起日不得晚於迄日。',
+      null
+    );
+  }
   return { filename, metadata };
 }
 
@@ -445,6 +570,14 @@ async function createEvidence(actor, body) {
   if (scope.error) return scope.error;
   try {
     const { filename, metadata } = validateEvidenceInput(body);
+    if (workflowStore.listEvidence(body.caseId).length >= MAX_EVIDENCE_PER_CASE) {
+      return fail(
+        409,
+        'CASE_EVIDENCE_LIMIT_REACHED',
+        '此案件已達 Demo 證據份數上限。',
+        { maxEvidencePerCase: MAX_EVIDENCE_PER_CASE }
+      );
+    }
     const duplicate = workflowStore
       .listEvidence(body.caseId)
       .find((item) => item.filename.toLowerCase() === filename.toLowerCase());
@@ -750,7 +883,8 @@ async function handleWorkflowApi(method, pathname, body = {}, context = {}) {
     pathname.startsWith('/api/importer/') ||
     pathname.startsWith('/api/verifier/') ||
     pathname.startsWith('/api/vault/') ||
-    pathname.startsWith('/api/workflow/');
+    pathname.startsWith('/api/workflow/') ||
+    pathname === '/api/agent/analyze';
   if (!isWorkflowRoute) return null;
 
   const actorResult = requireActor(context);
@@ -785,6 +919,17 @@ async function handleWorkflowApi(method, pathname, body = {}, context = {}) {
   const submitMatch = pathname.match(/^\/api\/cases\/([^/]+)\/submit$/);
   if (method === 'POST' && submitMatch) {
     return submitCase(actor, decodeURIComponent(submitMatch[1]));
+  }
+
+  const agentAnalyzeMatch = pathname.match(/^\/api\/cases\/([^/]+)\/agent\/analyze$/);
+  if (method === 'POST' && agentAnalyzeMatch) {
+    return analyzeCase(actor, decodeURIComponent(agentAnalyzeMatch[1]));
+  }
+  if (method === 'POST' && pathname === '/api/agent/analyze') {
+    if (typeof body.caseId !== 'string' || !body.caseId.trim()) {
+      return fail(400, 'CASE_ID_REQUIRED', 'caseId 為必填字串。');
+    }
+    return analyzeCase(actor, body.caseId);
   }
 
   const importerSummaryMatch = pathname.match(/^\/api\/importer\/cases\/([^/]+)\/summary$/);
@@ -889,6 +1034,7 @@ async function handleWorkflowApi(method, pathname, body = {}, context = {}) {
 
 module.exports = {
   ALLOWED_MEDIA_TYPES,
+  MAX_EVIDENCE_PER_CASE,
   MAX_EVIDENCE_BYTES,
   handleWorkflowApi,
 };
