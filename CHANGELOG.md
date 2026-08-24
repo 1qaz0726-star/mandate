@@ -1,8 +1,49 @@
 # CHANGELOG
 
-## Trust Engine P1 修正（2026-08-24，working tree 未 commit）
+## Day 4 — Evidence Agent + Four-act Demo + Trust P1 覆驗（2026-08-27，branch `feature/agent-demo-integration`）
 
-分支 `feature/agent-demo-integration`，基於 Day 3 commit `8f10675`。修正獨立審查在 Day 3 trust engine 上找到的 P1 缺陷，讓它可以安全作 Day 4 基底。**這仍然是 demo commitment fallback，不是真 zk-SNARK。**
+Draft PR [#6](https://github.com/1qaz0726-star/mandate/pull/6) 為對 **`main` 的累積型 Draft PR**（已含 Day 1–4）；PR #3／#4／#5 亦 target `main`、內容已涵蓋、**均未 merge**（#4 `55ac373` ≈ `b4a8bef`）。Runtime commits（git 記錄 **2026-08-24～25**）：`b4a8bef`、`635baf7`、`9b2e6ab`、`b712df2`；瀏覽器資源 `c1d4ec6`。部署：https://mandate.1qaz0726.workers.dev（Version ID `6178232c-8ebf-4d0a-ab0f-814af9719ee0`）。8/28 建議 merge **#6** 並關閉舊 PR。
+
+### 本階段完成
+
+- **`635baf7` Trust P1 覆驗**（PR #5 獨立 review 缺陷修復，見下節）：`buildCaseTrustContext()`、逐批 proof、`services/policy-registry/`、證據涵蓋 metadata、`smoke:trust` **43**。
+- **`b4a8bef` UI 可攜**：`tests/ui/static-contract.js` 不再依賴本機 `_backups/` → UI **19/19**。
+- **`9b2e6ab` Evidence Agent**：`services/agent/` 確定性 rule engine（**無 LLM**，`demo-rule-based-no-llm-v1`）；`server/agentAdapter.js`；RiskReport canonical；injection sandbox + DoS caps；`npm run smoke:evidence-agent` **20**。
+- **Agent／Workflow API**：`POST /api/cases/:id/agent/analyze`、`POST /api/agent/analyze` alias；Importer `agentSafeSummary`；audit 僅 reportId／counts／reasonCodes；Agent **不參與** READY。
+- **`b712df2` 四幕 Demo**：Root UI 四幕控制台（normal／Grant+Importer／三 attack／physical boundary）；`#revalidate-trust`；`POST /api/demo/attack`（`tampered_quantity`／`wrong_factor`／`proof_context_swap`）；`GET|POST /api/demo/physical-reality`；`tests/workflow/smoke.js` **47**。
+- **`c1d4ec6` 瀏覽器驗收**：`docs/handoff/screenshots/day4/`（GIF + PNG）。
+- **交棒**：`DAY4_*`、`PHASE4_SESSION_LOG`、`docs/demo/DAY4_FOUR_ACT_DEMO.md`；README／DEPLOY 更新。
+
+### 測試基準線（165）
+
+```bash
+npm run smoke:carbon-core      # 36/36
+npm run smoke:evidence-agent   # 20/20
+npm run smoke:workflow         # 47/47 + UI 19/19
+npm run smoke:trust            # 43/43
+```
+
+### 本階段刻意不做
+
+- 真 zk-SNARK（Circom/snarkjs）；Proof 仍為 **demo commitment**。
+- LLM／OCR Evidence Agent；Legacy `smoke:agent` 仍需 Key。
+- 跨 isolate 持久 nonce；正式 Registry 治理；真實 auth／tenant。
+- 宣稱官方查驗完成、CBAM Certified、ZKP 已完成。
+
+### 已知限制
+
+- **`x-demo-role` 無 auth**；公開部署誰都能操作／reset。
+- **Workflow 全 in-memory**；Workers 冷啟動可能重置。
+- **Nonce 跨 isolate 不保證** replay protection。
+- Factor／Policy Registry **寫死** Demo 清單。
+- **`READY_FOR_VERIFIER` ≠ 核准**；Importer default **2.5** = Demo estimate。
+- 部署 **僅 synthetic data**。
+
+---
+
+## Trust Engine P1 修正（2026-08-24，commit `635baf7`）
+
+分支 `feature/agent-demo-integration`，基於 Day 3 commit `8f10675`。修正獨立審查在 Day 3 trust engine 上找到的 P1 缺陷，作為 Day 4 基底。**這仍然是 demo commitment fallback，不是真 zk-SNARK。**
 
 - **`server/trustAdapter.js`**：新增 `buildCaseTrustContext()`——expected context 一律從 workflow store 的真實案件快照（case／installationYear／shipments／evidence）與 Policy／Factor Registry 權威記錄獨立重建，並獨立重算 `CalculationReceipt.inputHash` 與逐批 `intensity × quantity`。呼叫端傳入的 `inputHash` 只當宣稱值比對（不符 → `PUBLIC_INPUT_MISMATCH`）。移除以 fixture 直接自簽自驗的 `getDemoContext()`。
 - **`services/proof/`**：`ProofEnvelope.proof` 的 `demoOnly:sha256:` commitment 現場重算並以 `crypto.timingSafeEqual` 比對（偽造 → `PROOF_INVALID`）；publicInputs 改為**逐批**綁定 caseId／shipmentId／installationId／reportingYear／quantityTonnesScaled／allocatedEmissionsScaled／intensity commitment／policyProfileId／policyVersion／policySnapshotHash／factorSetId／factorSetHash／inputHash／nonce／expiry；nonce ledger 加 TTL 與容量上限、改為「全部驗證通過後才原子消費」、提供 `setNonceLedger()` adapter hook。
