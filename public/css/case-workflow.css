@@ -229,6 +229,19 @@ h3 {
   padding: 18px 20px;
 }
 
+.service-strip {
+  flex-wrap: wrap;
+}
+
+.commitment-note {
+  flex-basis: 100%;
+  padding: 8px 10px;
+  border-left: 3px solid var(--warn);
+  color: var(--ink-muted);
+  background: #fff7df;
+  font-size: 0.82rem;
+}
+
 .case-hero p,
 .service-strip p {
   margin-bottom: 0;
@@ -300,6 +313,43 @@ h3 {
 
 .role-view {
   padding: clamp(16px, 3vw, 28px);
+}
+
+.demo-console {
+  padding: clamp(16px, 3vw, 24px);
+}
+
+.act-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.act-card {
+  padding: 16px;
+  border: 1px solid var(--line);
+  background: var(--bg-inset);
+}
+
+.act-card p {
+  color: var(--ink-muted);
+}
+
+.attack-actions {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+}
+
+.demo-result {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px dashed var(--line-strong);
+  background: white;
+  overflow-wrap: anywhere;
+}
+
+.demo-result p:last-child {
+  margin-bottom: 0;
 }
 
 .role-view[hidden] {
@@ -446,6 +496,30 @@ td code {
   gap: 12px;
 }
 
+.risk-panel {
+  margin-bottom: 16px;
+}
+
+.report-overview {
+  padding: 10px;
+  border-left: 4px solid var(--brand);
+  background: var(--brand-wash);
+  overflow-wrap: anywhere;
+}
+
+.report-section {
+  margin-top: 16px;
+}
+
+.report-section h4 {
+  margin-bottom: 8px;
+}
+
+.report-section ul {
+  margin: 0;
+  padding-left: 22px;
+}
+
 .token-once {
   grid-column: 1 / -1;
   padding: 14px;
@@ -587,7 +661,8 @@ footer {
   }
 
   .two-column,
-  .grant-panel {
+  .grant-panel,
+  .act-grid {
     grid-template-columns: 1fr;
   }
 

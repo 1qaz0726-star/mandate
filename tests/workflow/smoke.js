@@ -870,6 +870,79 @@ async function main() {
     assert.strictEqual(event.result, 'ERROR');
     assert.ok(!JSON.stringify(event).includes('{"entries":['));
   });
+
+  await check('demo attack: 三個 allowlist 情境由 server Trust Engine 真實攔截', async () => {
+    const expected = {
+      tampered_quantity: 'PUBLIC_INPUT_MISMATCH',
+      wrong_factor: 'FACTOR_NOT_ALLOWED',
+      proof_context_swap: 'PROOF_CONTEXT_MISMATCH',
+    };
+    const caseBefore = workflowStore.getCase(CASE_ID);
+    const carbonBefore = workflowStore.getCarbon(CASE_ID);
+    const servicesBefore = workflowStore.getServices();
+    for (const [scenario, reasonCode] of Object.entries(expected)) {
+      const response = await api('POST', '/api/demo/attack', 'Supplier', { scenario });
+      assert.strictEqual(response.status, 200);
+      assert.strictEqual(response.body.decision, 'BLOCKED');
+      assert.ok(response.body.reasonCodes.includes(reasonCode));
+      assert.strictEqual(response.body.demoOnly, true);
+      assert.strictEqual(response.body.storeModified, false);
+    }
+    assert.deepStrictEqual(workflowStore.getCase(CASE_ID), caseBefore);
+    assert.deepStrictEqual(workflowStore.getCarbon(CASE_ID), carbonBefore);
+    assert.deepStrictEqual(workflowStore.getServices(), servicesBefore);
+  });
+
+  await check('demo attack: 僅 Supplier 可執行且不接受任意 scenario', async () => {
+    for (const role of ['Importer', 'Verifier']) {
+      const response = await api('POST', '/api/demo/attack', role, {
+        scenario: 'tampered_quantity',
+      });
+      assert.strictEqual(response.status, 403);
+      expectStableError(response, 'ROLE_FORBIDDEN');
+    }
+    const invalid = await api('POST', '/api/demo/attack', 'Supplier', {
+      scenario: 'arbitrary_envelope',
+      envelope: { proof: 'attacker-controlled' },
+    });
+    assert.strictEqual(invalid.status, 400);
+    expectStableError(invalid, 'DEMO_SCENARIO_INVALID');
+  });
+
+  await check('demo attack audit: 只記 scenario 與 reasonCodes，不含 proof/token/content', async () => {
+    const response = await api('GET', `/api/cases/${CASE_ID}/audit`, 'Supplier');
+    const events = response.body.events.filter((item) => item.action === 'DEMO_ATTACK_EVALUATE');
+    assert.strictEqual(events.length, 3);
+    events.forEach((event) => {
+      assert.strictEqual(typeof event.scenario, 'string');
+      assert.ok(Array.isArray(event.reasonCodes));
+      const serialized = JSON.stringify(event);
+      for (const forbidden of ['"proof":', '"token":', 'contentBase64', 'inputHash', '"checks":']) {
+        assert.ok(!serialized.includes(forbidden), `demo attack audit leaked ${forbidden}`);
+      }
+    });
+  });
+
+  await check('physical boundary: GET/POST 固定誠實回應且不改 Gate/status/services', async () => {
+    const caseBefore = workflowStore.getCase(CASE_ID);
+    const servicesBefore = workflowStore.getServices();
+    for (const method of ['GET', 'POST']) {
+      const response = await api(
+        method,
+        '/api/demo/physical-reality',
+        'Importer',
+        method === 'POST' ? {} : undefined
+      );
+      assert.strictEqual(response.status, 200);
+      assert.strictEqual(response.body.demoOnly, true);
+      assert.strictEqual(response.body.physicalRealityVerified, false);
+      assert.strictEqual(response.body.recommendedAction, 'ONSITE_VERIFICATION');
+      assert.strictEqual(response.body.caseStatusUnchanged, true);
+      assert.strictEqual(response.body.gateUnchanged, true);
+    }
+    assert.deepStrictEqual(workflowStore.getCase(CASE_ID), caseBefore);
+    assert.deepStrictEqual(workflowStore.getServices(), servicesBefore);
+  });
 }
 
 main()

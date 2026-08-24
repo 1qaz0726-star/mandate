@@ -8,6 +8,7 @@ const { resolvePolicyProfile } = require('../services/policy-registry');
 const {
   verifyProofEnvelope,
   generateDemoProofEnvelope,
+  buildProofCommitment,
   buildIntensityCommitment,
   consumeNonces,
 } = require('../services/proof');
@@ -16,6 +17,11 @@ const workflowStore = require('./workflowStore');
 
 const TRUST_SERVICE_NAMES = ['proof', 'gate'];
 const STABLE_REASON_CODE = /^[A-Z][A-Z0-9_]*$/;
+const DEMO_ATTACK_SCENARIOS = Object.freeze([
+  'tampered_quantity',
+  'wrong_factor',
+  'proof_context_swap',
+]);
 
 function unavailableResult() {
   return {
@@ -278,6 +284,73 @@ function generateShipmentProofEnvelopes(trustContext, options = {}) {
   );
 }
 
+function recommitDemoEnvelope(envelope) {
+  return {
+    ...envelope,
+    proof: buildProofCommitment({
+      circuitId: envelope.circuitId,
+      verificationKeyId: envelope.verificationKeyId,
+      publicInputs: envelope.publicInputs,
+      nonce: envelope.nonce,
+    }),
+  };
+}
+
+/**
+ * Demo-only attack harness. The caller can select only a fixed scenario name; no
+ * arbitrary envelope, hash, factor, or public input crosses this boundary.
+ */
+function runDemoAttackScenario(scenario) {
+  if (!DEMO_ATTACK_SCENARIOS.includes(scenario)) {
+    throw new TypeError('Invalid demo attack scenario.');
+  }
+  const trustContext = buildCaseTrustContext(workflowStore.DEMO_CASE_ID);
+  if (!trustContext.ok) {
+    throw new TypeError('Demo trust context is unavailable.');
+  }
+  const honestEnvelopes = generateShipmentProofEnvelopes(trustContext);
+  let attackedContext = trustContext;
+  let proofEnvelopes = honestEnvelopes;
+
+  if (scenario === 'tampered_quantity') {
+    proofEnvelopes = honestEnvelopes.map((envelope, index) => {
+      if (index !== 0) return envelope;
+      return recommitDemoEnvelope({
+        ...envelope,
+        publicInputs: {
+          ...envelope.publicInputs,
+          quantityTonnesScaled: toScaled(120),
+          allocatedEmissionsScaled: toScaled(216),
+        },
+      });
+    });
+  } else if (scenario === 'wrong_factor') {
+    attackedContext = {
+      ...trustContext,
+      factorResult: resolveFactorSet('FS-SELF-MADE-FAKE', {
+        policyProfile: { allowedFactorSets: ['FS-SELF-MADE-FAKE'] },
+        now: trustContext.now,
+      }),
+    };
+  } else {
+    const [shipA] = honestEnvelopes;
+    proofEnvelopes = [shipA, { ...shipA }];
+  }
+
+  const result = evaluateTrustScenario({
+    trustContext: attackedContext,
+    proofEnvelopes,
+  });
+  return {
+    scenario,
+    decision: result.gateResult.decision,
+    reasonCodes: result.gateResult.reasonCodes,
+    checks: result.gateResult.checks,
+    demoOnly: true,
+    storeModified: false,
+  };
+}
+
 /**
  * 組合 Policy Registry + Factor Registry + 逐批 Proof 驗證 + 證據涵蓋四者的結果，
  * 映射成 trustAdapter.evaluate() 的 { proof, gate } service-readiness 形狀。
@@ -523,6 +596,7 @@ function resetEvaluatorForTests() {
 }
 
 module.exports = {
+  DEMO_ATTACK_SCENARIOS,
   evaluate,
   resetEvaluatorForTests,
   setEvaluatorForTests,
@@ -533,5 +607,6 @@ module.exports = {
   expectedPublicInputs,
   generateShipmentProofEnvelopes,
   evaluateTrustScenario,
+  runDemoAttackScenario,
   productionEvaluator,
 };

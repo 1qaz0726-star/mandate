@@ -12,7 +12,7 @@
   <a class="skip-link" href="#workspace">跳到主要內容</a>
   <header class="site-header">
     <div>
-      <p class="eyebrow">Mandate · Day 2 Prototype</p>
+      <p class="eyebrow">Mandate · Day 4 Four-act Demo</p>
       <h1>可信碳排證據 Agent</h1>
     </div>
     <div class="header-actions">
@@ -66,6 +66,47 @@
         <span class="service-chip">Proof：載入中</span>
         <span class="service-chip">Gate：載入中</span>
       </div>
+      <p class="commitment-note">Proof / Gate 的「已驗證」僅指 Demo SHA-256 commitment 與資料一致性檢查，非 zk-SNARK、非物理真實驗證。</p>
+    </section>
+
+    <section class="panel demo-console" aria-labelledby="demo-console-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Day 4 · Four-act Demo</p>
+          <h2 id="demo-console-title">四幕 Demo 控制台</h2>
+        </div>
+      </div>
+      <div class="act-grid">
+        <article class="act-card">
+          <h3>幕 1｜正常案件</h3>
+          <p>重置、載入四份 synthetic 文件、人工確認、提交、Agent 預審、Trust 重驗，一鍵走到 READY_FOR_VERIFIER。</p>
+          <button id="run-act-1" class="button" type="button">一鍵執行正常案件</button>
+        </article>
+        <article class="act-card">
+          <h3>幕 2｜最小揭露</h3>
+          <p>衍生 RiskReport 不是底稿；Importer 只看安全摘要，Verifier 必須使用一次性短效 token 才能開啟指定底稿。</p>
+          <div class="button-row">
+            <button id="run-act-2" class="button" type="button">建立 Grant 並看 Importer 摘要</button>
+            <button id="open-act-2-verifier" class="button secondary" type="button">切 Verifier 並開底稿一次</button>
+          </div>
+        </article>
+        <article class="act-card">
+          <h3>幕 3｜攻擊攔截</h3>
+          <p>三個按鈕都呼叫 server-side Trust Engine；結果不會修改正常案件。</p>
+          <div class="button-row attack-actions">
+            <button class="button danger attack-button" data-scenario="tampered_quantity" type="button">竄改 quantity</button>
+            <button class="button danger attack-button" data-scenario="wrong_factor" type="button">錯誤 factor</button>
+            <button class="button danger attack-button" data-scenario="proof_context_swap" type="button">SHIP-A Proof 套 SHIP-B</button>
+          </div>
+          <div id="attack-result" class="demo-result" role="status" aria-live="polite">尚未執行攻擊情境。</div>
+        </article>
+        <article class="act-card">
+          <h3>幕 4｜誠實邊界</h3>
+          <p>文件數字一致不代表現場儀表正常或已校正。Commitment / Gate 只驗資料一致性，不證明物理真實。</p>
+          <button id="run-act-4" class="button secondary" type="button">展示物理真實邊界</button>
+          <div id="physical-result" class="demo-result" role="status" aria-live="polite">尚未執行物理邊界情境。</div>
+        </article>
+      </div>
     </section>
 
     <section id="supplier-view" class="role-view" data-view="Supplier" aria-labelledby="supplier-title">
@@ -74,7 +115,11 @@
           <p class="eyebrow">Supplier Workspace</p>
           <h2 id="supplier-title">年度底稿與證據準備</h2>
         </div>
-        <button id="seed-evidence" class="button" type="button">一鍵載入四份 synthetic Demo evidence</button>
+        <div class="button-row">
+          <button id="seed-evidence" class="button secondary" type="button">載入四份 synthetic Demo evidence</button>
+          <button id="run-agent-analysis" class="button" type="button">執行 Evidence Agent 預審</button>
+          <button id="revalidate-trust" class="button" type="button">重驗 Proof / Gate</button>
+        </div>
       </div>
 
       <div id="installation-cards" class="metric-grid" aria-live="polite"></div>
@@ -131,6 +176,12 @@
         </section>
       </div>
 
+      <section class="panel risk-panel" aria-labelledby="supplier-risk-title">
+        <h3 id="supplier-risk-title">Evidence Agent RiskReport</h3>
+        <p class="privacy-note">衍生風險報告，不是底稿；預審不參與 Gate，也不代表 Agent 完成任何驗證。</p>
+        <div id="supplier-risk-report" aria-live="polite"></div>
+      </section>
+
       <section class="panel grant-panel" aria-labelledby="grant-title">
         <div>
           <h3 id="grant-title">為 Demo Verifier 建立一次性短效 Grant</h3>
@@ -165,6 +216,11 @@
         </div>
       </div>
       <p class="privacy-note">此角色只取得申報前摘要與完整度，不提供供應商底稿或 Vault 存取。</p>
+      <section class="panel risk-panel" aria-labelledby="importer-risk-title">
+        <h3 id="importer-risk-title">Evidence Agent 安全摘要</h3>
+        <p>僅顯示 server 產生的計數、reason codes 與下一步；不含來源檔名、頁碼、引用、抽取原值或物料清單。</p>
+        <div id="importer-agent-summary" aria-live="polite"></div>
+      </section>
       <div id="importer-summary" class="metric-grid" aria-live="polite"></div>
       <section class="panel">
         <h3>批次分攤</h3>
@@ -215,6 +271,11 @@
           </div>
         </section>
       </div>
+      <section class="panel risk-panel" aria-labelledby="verifier-risk-title">
+        <h3 id="verifier-risk-title">Evidence Agent RiskReport</h3>
+        <p class="privacy-note">這是衍生分析，不是 Vault 原始底稿；閱讀報告本身不會消耗 Grant。</p>
+        <div id="verifier-risk-report" aria-live="polite"></div>
+      </section>
       <section class="panel">
         <h3>記錄 finding</h3>
         <form id="finding-form" class="inline-form">

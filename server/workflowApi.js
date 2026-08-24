@@ -874,6 +874,58 @@ function addFinding(actor, caseId, body) {
   return ok(201, { finding });
 }
 
+function runDemoAttack(actor, body) {
+  const scope = requireCase(actor, workflowStore.DEMO_CASE_ID, 'Supplier');
+  if (scope.error) return scope.error;
+  const scenario = body && body.scenario;
+  if (!trustAdapter.DEMO_ATTACK_SCENARIOS.includes(scenario)) {
+    return fail(
+      400,
+      'DEMO_SCENARIO_INVALID',
+      'scenario 必須是固定攻擊情境。',
+      { allowedScenarios: trustAdapter.DEMO_ATTACK_SCENARIOS }
+    );
+  }
+  try {
+    const result = trustAdapter.runDemoAttackScenario(scenario);
+    audit(
+      actor,
+      'DEMO_ATTACK_EVALUATE',
+      'demo_scenario',
+      scenario,
+      result.decision === 'BLOCKED' ? 'DENY' : 'ERROR',
+      result.reasonCodes[0] || null,
+      workflowStore.DEMO_CASE_ID,
+      { scenario, reasonCodes: result.reasonCodes }
+    );
+    return ok(200, result);
+  } catch {
+    return fail(
+      503,
+      'TRUST_ADAPTER_FAILURE',
+      'Trust Engine 暫時無法執行攻擊情境。',
+      null,
+      true
+    );
+  }
+}
+
+function physicalRealityBoundary() {
+  return ok(200, {
+    scenario: 'consistent_documents_but_uncalibrated_meter',
+    documentConsistencyVerified: true,
+    commitmentVerified: true,
+    gateScope: 'DATA_CONSISTENCY_ONLY',
+    physicalRealityVerified: false,
+    finding: '文件數字彼此一致，但現場儀表失效或未校正，資料一致性不能證明物理真實。',
+    recommendedAction: 'ONSITE_VERIFICATION',
+    nextStep: '轉交查驗員檢查校正紀錄，並安排實地查驗。',
+    caseStatusUnchanged: true,
+    gateUnchanged: true,
+    demoOnly: true,
+  });
+}
+
 async function handleWorkflowApi(method, pathname, body = {}, context = {}) {
   const isWorkflowRoute =
     pathname === '/api/cases' ||
@@ -884,6 +936,7 @@ async function handleWorkflowApi(method, pathname, body = {}, context = {}) {
     pathname.startsWith('/api/verifier/') ||
     pathname.startsWith('/api/vault/') ||
     pathname.startsWith('/api/workflow/') ||
+    pathname.startsWith('/api/demo/') ||
     pathname === '/api/agent/analyze';
   if (!isWorkflowRoute) return null;
 
@@ -1015,6 +1068,17 @@ async function handleWorkflowApi(method, pathname, body = {}, context = {}) {
 
   if (method === 'POST' && pathname === '/api/workflow/revalidate') {
     return revalidateCase(actor);
+  }
+
+  if (method === 'POST' && pathname === '/api/demo/attack') {
+    return runDemoAttack(actor, body);
+  }
+
+  if (
+    (method === 'GET' || method === 'POST') &&
+    pathname === '/api/demo/physical-reality'
+  ) {
+    return physicalRealityBoundary();
   }
 
   if (method === 'POST' && pathname === '/api/workflow/reset') {

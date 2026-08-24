@@ -283,6 +283,7 @@ function appendAudit(partial) {
     ...(partial.modelVersion ? { modelVersion: partial.modelVersion } : {}),
     ...(partial.counts ? { counts: clone(partial.counts) } : {}),
     ...(partial.reasonCodes ? { reasonCodes: clone(partial.reasonCodes) } : {}),
+    ...(partial.scenario ? { scenario: partial.scenario } : {}),
     demoOnly: true,
   };
   state.audit.push(event);

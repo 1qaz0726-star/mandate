@@ -41,7 +41,8 @@ function listFilesRecursively(directory) {
 function section(html, id) {
   const start = html.indexOf(`id="${id}"`);
   assert.ok(start >= 0, `missing section #${id}`);
-  const nextRoleView = html.indexOf('class="role-view"', start + 1);
+  const openingEnd = html.indexOf('>', start);
+  const nextRoleView = html.indexOf('class="role-view"', openingEnd + 1);
   return html.slice(start, nextRoleView < 0 ? html.length : nextRoleView);
 }
 
@@ -89,6 +90,29 @@ check('root: 信任邊界與 unavailable 文案存在', () => {
   assert.ok(!/CBAM Certified|Officially Approved|海關已核准/i.test(index));
 });
 
+check('Day4: 四幕控制台、Agent/Trust 按鈕與誠實文案存在', () => {
+  for (const value of [
+    'id="run-act-1"',
+    'id="run-act-2"',
+    'id="open-act-2-verifier"',
+    'data-scenario="tampered_quantity"',
+    'data-scenario="wrong_factor"',
+    'data-scenario="proof_context_swap"',
+    'id="run-act-4"',
+    'id="run-agent-analysis"',
+    'id="revalidate-trust"',
+    '非 zk-SNARK',
+    '不證明物理真實',
+    '衍生分析，不是 Vault 原始底稿',
+  ]) {
+    assert.ok(index.includes(value), `missing Day4 hook/text ${value}`);
+  }
+  assert.ok(!index.includes('Agent 已驗證'));
+  assert.ok(script.includes('Agent：預審已完成（不參與 Gate）'));
+  assert.ok(script.includes("'/api/demo/attack'"));
+  assert.ok(script.includes("'/api/demo/physical-reality'"));
+});
+
 check('root: favicon 使用內嵌資源，不會再請求缺少的 /favicon.ico', () => {
   assert.ok(index.includes('rel="icon"'));
   assert.ok(index.includes('href="data:image/svg+xml,'));
@@ -108,9 +132,43 @@ check('Importer: 靜態區塊沒有敏感欄位 hooks', () => {
     'grant-token',
     'evidence-filename',
     'opened-content',
+    'sourceFile',
+    'sourcePage',
+    'citations',
+    'contentBase64',
+    'BOM',
   ]) {
     assert.ok(!importer.includes(forbidden), `Importer section contains ${forbidden}`);
   }
+});
+
+check('RiskReport: Supplier/Verifier 完整欄位與 Importer 安全摘要 hooks 分離', () => {
+  const supplier = section(index, 'supplier-view');
+  const importer = section(index, 'importer-view');
+  const verifier = section(index, 'verifier-view');
+  assert.ok(supplier.includes('id="supplier-risk-report"'));
+  assert.ok(verifier.includes('id="verifier-risk-report"'));
+  assert.ok(importer.includes('id="importer-agent-summary"'));
+  for (const value of [
+    "'Facts'",
+    "'抽取值與來源'",
+    "'Missing evidence'",
+    "'Discrepancies'",
+    "'Next actions'",
+    'entry.sourceFile',
+    'entry.sourcePage',
+    'entry.confidence',
+    'entry.humanConfirmed',
+  ]) {
+    assert.ok(script.includes(value), `missing full RiskReport renderer ${value}`);
+  }
+  assert.ok(script.includes('renderAgentSafeSummary(caseRecord.agentSummary)'));
+});
+
+check('client: 可控文件與報告值使用安全 DOM API，不使用 innerHTML', () => {
+  assert.ok(script.includes('textContent'));
+  assert.ok(script.includes('replaceChildren'));
+  assert.ok(!script.includes('.innerHTML'));
 });
 
 check('client: 所有 API 帶角色 header 且 token 不進 URL', () => {

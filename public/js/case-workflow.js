@@ -10,6 +10,36 @@ const REQUIRED_TYPES = [
   'production_report',
   'precursor_list',
 ];
+const DEMO_EVIDENCE = [
+  {
+    type: 'electricity_bill',
+    filename: 'demo-electricity-2026.json',
+    entries: [
+      { field: 'electricityMWh', value: 100, unit: 'MWh', sourcePage: 2, confidence: 0.99, humanConfirmed: true },
+    ],
+  },
+  {
+    type: 'fuel_ledger',
+    filename: 'demo-fuel-2026.json',
+    entries: [
+      { field: 'fuelGJ', value: 80, unit: 'GJ', sourcePage: 3, confidence: 0.98, humanConfirmed: true },
+    ],
+  },
+  {
+    type: 'production_report',
+    filename: 'demo-production-2026.json',
+    entries: [
+      { field: 'productionTonnes', value: 200, unit: 'tonne', sourcePage: 4, confidence: 0.99, humanConfirmed: true },
+    ],
+  },
+  {
+    type: 'precursor_list',
+    filename: 'demo-precursor-2026.json',
+    entries: [
+      { field: 'precursorTonnes', value: 150, unit: 'tonne', sourcePage: 5, confidence: 0.97, humanConfirmed: true },
+    ],
+  },
+];
 
 const ERROR_GUIDANCE = {
   DEMO_ROLE_REQUIRED: ['尚未選定 Demo 角色。', '請切換 Supplier、Importer 或 Verifier 後重試。'],
@@ -37,6 +67,11 @@ const ERROR_GUIDANCE = {
   ALLOCATION_EXCEEDS_PRODUCTION: ['批次分配超過年度可用產量。', '降低批次數量或更正年度產量。'],
   CONTRACT_VALIDATION_FAILED: ['資料不符合 canonical contract。', '依 reason code 修正必填欄位與型別。'],
   SERVICE_UNAVAILABLE: ['Proof 或 Gate 尚未驗證。', '保留 METHOD_REVIEW，待 Proof 與 Gate 接妥後再重驗；Agent 不參與 readiness。'],
+  TRUST_ADAPTER_FAILURE: ['Trust Engine 暫時無法完成檢查。', '稍後按「重驗 Proof / Gate」重試；案件不會被誤標為 READY。'],
+  AGENT_ANALYSIS_FAILED: ['Evidence Agent 預審暫時失敗。', '可重試預審；Proof / Gate 與 readiness 不受 Agent 失敗影響。'],
+  EVIDENCE_JSON_INVALID: ['Synthetic evidence 無法解析。', '重置 Demo 後重新載入固定四份文件。'],
+  DEMO_SCENARIO_INVALID: ['攻擊情境不在 server allowlist。', '請使用控制台提供的三個固定情境。'],
+  CLIPBOARD_UNAVAILABLE: ['瀏覽器未允許剪貼簿操作。', '可直接切換 Verifier，token 已保存在本次 session。'],
   INVALID_JSON: ['送出的資料格式無效。', '重新載入頁面後再試。'],
   INTERNAL_ERROR: ['伺服器暫時無法完成操作。', '稍後重試；若持續發生，檢查 server 狀態。'],
   NETWORK_UNAVAILABLE: ['無法連上本機 API。', '確認 npm start 正在執行，然後重新整理。'],
@@ -255,13 +290,151 @@ function renderServices(services = {}) {
     chip.className = 'service-chip';
     chip.dataset.state = service.status;
     const label = name[0].toUpperCase() + name.slice(1);
-    chip.textContent =
-      service.status === 'available' && service.verification === 'verified'
-        ? `${label}：已驗證`
-        : `${label}：尚未驗證（${service.status}）`;
+    if (name === 'agent') {
+      if (service.execution === 'executed') {
+        chip.textContent = 'Agent：預審已完成（不參與 Gate）';
+      } else if (service.execution === 'failed') {
+        chip.textContent = 'Agent：預審失敗，可重試（不參與 Gate）';
+      } else {
+        chip.textContent = `Agent：尚未執行（${service.status}，不參與 Gate）`;
+      }
+    } else {
+      chip.textContent =
+        service.status === 'available' && service.verification === 'verified'
+          ? `${label}：已驗證（Demo commitment，非 zk-SNARK）`
+          : `${label}：尚未驗證（${service.status}）`;
+    }
     return chip;
   });
   replaceChildren($('service-statuses'), chips);
+}
+
+function textList(items, emptyText) {
+  if (!Array.isArray(items) || !items.length) {
+    const empty = document.createElement('p');
+    empty.className = 'empty-state';
+    empty.textContent = emptyText;
+    return empty;
+  }
+  const list = document.createElement('ul');
+  items.forEach((value) => {
+    const item = document.createElement('li');
+    item.textContent = String(value);
+    list.append(item);
+  });
+  return list;
+}
+
+function reportSection(title, child) {
+  const section = document.createElement('section');
+  section.className = 'report-section';
+  const heading = document.createElement('h4');
+  heading.textContent = title;
+  section.append(heading, child);
+  return section;
+}
+
+function renderRiskReport(target, report) {
+  if (!report) {
+    const empty = document.createElement('p');
+    empty.className = 'empty-state';
+    empty.textContent = '尚未執行 Evidence Agent 預審。';
+    replaceChildren(target, [empty]);
+    return;
+  }
+  const summary = report.summary || {};
+  const overview = document.createElement('p');
+  overview.className = 'report-overview';
+  overview.textContent =
+    `${report.reviewStatus} · ${report.modelVersion} · ${report.reportId}`;
+
+  const entryRows = (report.entries || []).map((entry) => [
+    entry.field,
+    entry.value,
+    entry.unit,
+    entry.sourceFile,
+    entry.sourcePage,
+    Number(entry.confidence).toFixed(2),
+    entry.humanConfirmed ? '是' : '否',
+    entry.eligibleForCalculation ? '可供勾稽' : '待人工確認',
+  ]);
+  const findingRows = (report.findings || []).map((finding) => [
+    finding.reasonCode,
+    finding.severity,
+    finding.message,
+  ]);
+  const missingRows = (report.missingEvidence || []).map((item) => [
+    item.requiredEvidence,
+    item.coveredPeriod,
+    item.missingPeriod,
+    item.requestedAction,
+  ]);
+  const discrepancyRows = (report.discrepancies || []).map((item) => [
+    item.ruleId,
+    item.leftValue,
+    item.rightValue,
+    item.difference,
+    item.severity,
+    (item.possibleExplanations || []).join('；'),
+  ]);
+  const citationRows = (report.citations || []).map((item) => [
+    item.reasonCode,
+    item.sourceFile,
+    item.sourcePage,
+  ]);
+
+  replaceChildren(target, [
+    overview,
+    reportSection('Facts', textList(summary.facts, '尚無 facts。')),
+    reportSection(
+      '抽取值與來源',
+      createTable(
+        ['Field', 'Value', 'Unit', 'Source file', 'Page', 'Confidence', 'Human confirmed', 'Eligibility'],
+        entryRows
+      )
+    ),
+    reportSection(
+      'Findings',
+      createTable(['Reason code', 'Severity', 'Message'], findingRows)
+    ),
+    reportSection(
+      'Missing evidence',
+      createTable(['Required', 'Covered', 'Missing', 'Requested action'], missingRows)
+    ),
+    reportSection(
+      'Discrepancies',
+      createTable(['Rule', 'Left', 'Right', 'Difference', 'Severity', 'Possible explanations'], discrepancyRows)
+    ),
+    reportSection('Open issues', textList(summary.openIssues, '尚無 open issue。')),
+    reportSection('Next actions', textList(summary.nextActions, '交由查驗員進行後續專業檢視。')),
+    reportSection(
+      'Citations',
+      createTable(['Reason code', 'Source file', 'Page'], citationRows)
+    ),
+  ]);
+}
+
+function renderAgentSafeSummary(summary) {
+  const target = $('importer-agent-summary');
+  if (!summary) {
+    const empty = document.createElement('p');
+    empty.className = 'empty-state';
+    empty.textContent = '尚未產生可供 Importer 查看之安全摘要。';
+    replaceChildren(target, [empty]);
+    return;
+  }
+  const counts = summary.counts || {};
+  replaceChildren(target, [
+    document.createTextNode(`${summary.reviewStatus} · ${summary.modelVersion}`),
+    reportSection('安全計數', textList([
+      `findings: ${counts.findings || 0}`,
+      `missing evidence: ${counts.missingEvidence || 0}`,
+      `discrepancies: ${counts.discrepancies || 0}`,
+      `open issues: ${counts.openIssues || 0}`,
+    ], '尚無計數。')),
+    reportSection('Reason codes', textList(summary.reasonCodes, '尚無 reason code。')),
+    reportSection('Next actions', textList(summary.nextActions, '交由查驗員後續檢視。')),
+  ]);
 }
 
 function renderSupplier(caseRecord) {
@@ -276,6 +449,7 @@ function renderSupplier(caseRecord) {
   state.evidence = Array.isArray(caseRecord.evidence) ? caseRecord.evidence : [];
   renderSupplierEvidence();
   renderGrantControls();
+  renderRiskReport($('supplier-risk-report'), caseRecord.riskReport);
 }
 
 function renderSupplierEvidence() {
@@ -360,6 +534,7 @@ function renderImporter(payload) {
   $('default-intensity').textContent =
     `${payload.comparison.defaultEstimateIntensity} ${payload.comparison.unit}`;
   $('estimate-label').textContent = payload.comparison.label;
+  renderAgentSafeSummary(caseRecord.agentSummary);
 }
 
 function renderVerifier(caseRecord, indexPayload) {
@@ -384,6 +559,7 @@ function renderVerifier(caseRecord, indexPayload) {
   $('verifier-token').value = getToken();
   renderVerifierGrantState();
   renderFindings(caseRecord.findings || []);
+  renderRiskReport($('verifier-risk-report'), caseRecord.riskReport);
 }
 
 function renderVerifierGrantState() {
@@ -556,25 +732,19 @@ async function handleUpload(event) {
 }
 
 async function seedEvidence() {
-  const seeds = [
-    ['electricity_bill', 'demo-electricity-2026.txt', 'synthetic electricity evidence 2026'],
-    ['fuel_ledger', 'demo-fuel-2026.txt', 'synthetic fuel evidence 2026'],
-    ['production_report', 'demo-production-2026.txt', 'synthetic production evidence 2026'],
-    ['precursor_list', 'demo-precursor-2026.txt', 'synthetic precursor evidence 2026'],
-  ];
   let created = 0;
   let skipped = 0;
   const result = await runAction(async () => {
-    for (const [type, filename, content] of seeds) {
+    for (const seed of DEMO_EVIDENCE) {
       try {
         await uploadEvidence({
-          type,
-          filename,
-          content,
-          mediaType: 'text/plain',
+          type: seed.type,
+          filename: seed.filename,
+          content: JSON.stringify({ entries: seed.entries }),
+          mediaType: 'application/json',
           coveredFrom: '2026-01-01',
           coveredTo: '2026-12-31',
-          source: `synthetic-demo-${type}`,
+          source: `synthetic-demo-${seed.type}`,
         });
         created += 1;
       } catch (error) {
@@ -643,12 +813,105 @@ async function submitCase() {
   showNotice(message);
 }
 
+async function analyzeCase() {
+  const result = await runAction(
+    () => api(`/api/cases/${CASE_ID}/agent/analyze`, {
+      method: 'POST',
+      role: 'Supplier',
+      body: {},
+    }),
+    'Evidence Agent 預審已完成；這是衍生風險報告，不參與 Gate。'
+  );
+  if (result) await runAction(loadRole);
+  return result;
+}
+
+async function revalidateTrust() {
+  const result = await runAction(
+    () => api('/api/workflow/revalidate', {
+      method: 'POST',
+      role: 'Supplier',
+      body: {},
+    })
+  );
+  if (!result) return null;
+  await runAction(loadRole);
+  const codes = result.readiness.reasonCodes || [];
+  showNotice(
+    result.readiness.status === 'READY_FOR_VERIFIER'
+      ? 'Proof / Gate 重驗完成：READY_FOR_VERIFIER。此為 Demo commitment，非 zk-SNARK，也不證明物理真實。'
+      : `${result.readiness.message} reason code: ${codes.join(', ') || 'SERVICE_UNAVAILABLE'}`
+  );
+  return result;
+}
+
+async function resetDirect() {
+  await api('/api/workflow/reset', { method: 'POST', role: 'Supplier', body: {} });
+  setToken('');
+  saveGrant(null);
+  $('opened-content').textContent = '';
+  $('opened-evidence').hidden = true;
+}
+
+async function runActOne() {
+  if (state.role !== 'Supplier') await switchRole('Supplier');
+  const result = await runAction(async () => {
+    await resetDirect();
+    const uploaded = [];
+    for (const seed of DEMO_EVIDENCE) {
+      const created = await uploadEvidence({
+        type: seed.type,
+        filename: seed.filename,
+        content: JSON.stringify({ entries: seed.entries }),
+        mediaType: 'application/json',
+        coveredFrom: '2026-01-01',
+        coveredTo: '2026-12-31',
+        source: `synthetic-demo-${seed.type}`,
+      });
+      uploaded.push(created.evidence);
+    }
+    for (const evidence of uploaded) {
+      await api(`/api/evidence/${encodeURIComponent(evidence.evidenceId)}/confirm`, {
+        method: 'POST',
+        role: 'Supplier',
+        body: { confirmed: true },
+      });
+    }
+    await api(`/api/cases/${CASE_ID}/submit`, {
+      method: 'POST',
+      role: 'Supplier',
+      body: {},
+    });
+    await api(`/api/cases/${CASE_ID}/agent/analyze`, {
+      method: 'POST',
+      role: 'Supplier',
+      body: {},
+    });
+    const revalidated = await api('/api/workflow/revalidate', {
+      method: 'POST',
+      role: 'Supplier',
+      body: {},
+    });
+    await loadRole();
+    if (revalidated.case.status !== 'READY_FOR_VERIFIER') {
+      throw {
+        code: revalidated.readiness.reasonCodes[0] || 'SERVICE_UNAVAILABLE',
+        message: revalidated.readiness.message,
+      };
+    }
+    return revalidated;
+  });
+  if (result) {
+    showNotice('幕 1 完成：案件已到 READY_FOR_VERIFIER；Agent 預審不參與 readiness。可再次點擊安全重跑。');
+  }
+}
+
 async function createGrant() {
   const evidenceId = $('grant-evidence').value;
   const seconds = Number($('grant-seconds').value);
   if (!evidenceId) {
     showError({ code: 'EVIDENCE_IDS_REQUIRED' });
-    return;
+    return null;
   }
   const expiresAt = new Date(Date.now() + seconds * 1000).toISOString();
   const result = await runAction(() => api('/api/vault/grants', {
@@ -661,7 +924,7 @@ async function createGrant() {
       expiresAt,
     },
   }));
-  if (!result) return;
+  if (!result) return null;
   setToken(result.token);
   saveGrant({
     grantId: result.grant.grantId,
@@ -674,6 +937,68 @@ async function createGrant() {
   renderGrantControls();
   showNotice('短效 Grant 已建立。Token 只在此處顯示一次，切換 Verifier 後會從 session 暫存帶入。');
   await runAction(refreshAudit);
+  return result;
+}
+
+async function runActTwo() {
+  if (state.role !== 'Supplier') await switchRole('Supplier');
+  if (!state.evidence.length) {
+    showError({
+      code: 'EVIDENCE_MISSING',
+      message: '請先執行幕 1，才能為指定底稿建立 Grant。',
+    });
+    return;
+  }
+  const created = await createGrant();
+  if (!created) return;
+  await switchRole('Importer');
+  showNotice('幕 2：Importer 目前只看 server 安全摘要。衍生報告不是底稿；可按「切 Verifier 並開底稿一次」。');
+}
+
+async function openActTwoVerifier() {
+  if (!getToken() || !state.grant) {
+    showError({ code: 'VAULT_ACCESS_DENIED' });
+    return;
+  }
+  await switchRole('Verifier');
+  $('verifier-evidence-select').value = state.grant.evidenceId;
+  $('verifier-token').value = getToken();
+  await openEvidence();
+}
+
+async function runAttackScenario(scenario) {
+  const result = await runAction(() => api('/api/demo/attack', {
+    method: 'POST',
+    role: 'Supplier',
+    body: { scenario },
+  }));
+  if (!result) return;
+  const target = $('attack-result');
+  target.replaceChildren();
+  const decision = document.createElement('strong');
+  decision.textContent = result.decision;
+  const reasons = document.createElement('p');
+  reasons.textContent = `reason code: ${result.reasonCodes.join(', ')}`;
+  const next = document.createElement('p');
+  next.textContent = '下一步：拒絕此輸入、修正案件／係數／Proof 綁定後重新送驗；正常案件未被修改。';
+  target.append(decision, reasons, next);
+}
+
+async function runPhysicalBoundary() {
+  const result = await runAction(() => api('/api/demo/physical-reality', {
+    method: 'POST',
+    body: {},
+  }));
+  if (!result) return;
+  const target = $('physical-result');
+  target.replaceChildren();
+  const finding = document.createElement('strong');
+  finding.textContent = result.finding;
+  const scope = document.createElement('p');
+  scope.textContent = `可驗範圍：${result.gateScope}；physicalRealityVerified: ${result.physicalRealityVerified}`;
+  const next = document.createElement('p');
+  next.textContent = `下一步：${result.nextStep}（${result.recommendedAction}）`;
+  target.append(finding, scope, next);
 }
 
 async function revokeGrant() {
@@ -835,6 +1160,8 @@ function bindEvents() {
   });
   $('evidence-form').addEventListener('submit', handleUpload);
   $('seed-evidence').addEventListener('click', seedEvidence);
+  $('run-agent-analysis').addEventListener('click', analyzeCase);
+  $('revalidate-trust').addEventListener('click', revalidateTrust);
   $('confirm-all').addEventListener('click', confirmAll);
   $('submit-case').addEventListener('click', submitCase);
   $('create-grant').addEventListener('click', createGrant);
@@ -847,6 +1174,13 @@ function bindEvents() {
   $('finding-form').addEventListener('submit', addFinding);
   $('refresh-audit').addEventListener('click', () => runAction(refreshAudit));
   $('reset-workflow').addEventListener('click', resetWorkflow);
+  $('run-act-1').addEventListener('click', runActOne);
+  $('run-act-2').addEventListener('click', runActTwo);
+  $('open-act-2-verifier').addEventListener('click', openActTwoVerifier);
+  document.querySelectorAll('.attack-button').forEach((button) => {
+    button.addEventListener('click', () => runAttackScenario(button.dataset.scenario));
+  });
+  $('run-act-4').addEventListener('click', runPhysicalBoundary);
 }
 
 bindEvents();
