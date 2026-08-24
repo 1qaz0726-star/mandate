@@ -1,6 +1,27 @@
 # CHANGELOG
 
-## Day 3 — Trust Engine：Proof + Factor Registry + Policy Gate（2026-08-26，working tree 未 commit）
+## Trust Engine P1 修正（2026-08-24，working tree 未 commit）
+
+分支 `feature/agent-demo-integration`，基於 Day 3 commit `8f10675`。修正獨立審查在 Day 3 trust engine 上找到的 P1 缺陷，讓它可以安全作 Day 4 基底。**這仍然是 demo commitment fallback，不是真 zk-SNARK。**
+
+- **`server/trustAdapter.js`**：新增 `buildCaseTrustContext()`——expected context 一律從 workflow store 的真實案件快照（case／installationYear／shipments／evidence）與 Policy／Factor Registry 權威記錄獨立重建，並獨立重算 `CalculationReceipt.inputHash` 與逐批 `intensity × quantity`。呼叫端傳入的 `inputHash` 只當宣稱值比對（不符 → `PUBLIC_INPUT_MISMATCH`）。移除以 fixture 直接自簽自驗的 `getDemoContext()`。
+- **`services/proof/`**：`ProofEnvelope.proof` 的 `demoOnly:sha256:` commitment 現場重算並以 `crypto.timingSafeEqual` 比對（偽造 → `PROOF_INVALID`）；publicInputs 改為**逐批**綁定 caseId／shipmentId／installationId／reportingYear／quantityTonnesScaled／allocatedEmissionsScaled／intensity commitment／policyProfileId／policyVersion／policySnapshotHash／factorSetId／factorSetHash／inputHash／nonce／expiry；nonce ledger 加 TTL 與容量上限、改為「全部驗證通過後才原子消費」、提供 `setNonceLedger()` adapter hook。
+- **`services/factor-registry/`**：記錄並比對 issuer／purpose／version／sourceHash，回傳不可變快照 hash。
+- **`services/policy-registry/`（新增）**：權威 PolicyProfile 記錄 + immutable snapshot 比對（CN code／年度／circuitId／requiredEvidence／status／version／allowedFactorSets），失敗回 `POLICY_NOT_APPLICABLE`。
+- **`services/policy-gate/`**：新增 `evaluateEvidenceCoverage()`，依**實際 EvidenceItem metadata** 計算涵蓋期間（不再由呼叫端寫死 `evidenceReady: true`）；`evaluateGate()` 改為規格 p.13 的「硬失敗→BLOCKED、缺件→NEEDS_EVIDENCE」順序，並支援逐批 proof 結果。
+- **`server/workflowStore.js`**：新增 `getCaseContext()`（案件計算上下文唯讀快照）。
+- **`server/workflowApi.js`**：`calculateReadiness()` 對純缺件類 reason code（`EVIDENCE_MISSING`／`EVIDENCE_PERIOD_INCOMPLETE`）回 `NEEDS_EVIDENCE` 而非 `BLOCKED`；路由表與 `maskCase()` 欄位未動。
+- **`resetEvaluatorForTests()`**：重置回**正式** evaluator；`tests/workflow/smoke.js` 改為明確注入 unavailable。
+- **`packages/contracts/schema-v1.json`**：新增 `ProofPublicInputs` 定義（全部選填，向後相容）。
+- **測試**：`npm run smoke:trust` 19 → **43**，含偽造 proof、任意 inputHash、SHIP-A→SHIP-B、換年度／工廠／政策／係數、失敗請求 nonce poisoning、缺半年證據真實 HTTP E2E。
+
+### 仍有的限制
+
+- **不是 zk-SNARK**：commitment 的輸入全部是公開值，只能防「proof 欄位被拆開替換」，不能證明公開輸入由合法電路產生；`cryptographic_proof` check 永遠 `skipped`。
+- **nonce ledger 跨 isolate 不保證**：Cloudflare Workers 多 isolate 不共用記憶體，只能宣稱單 isolate 內偵測重放，**不得宣稱完整 replay protection**。
+- Factor／Policy Registry 仍是程式碼裡寫死的 Demo 清單，不是官方治理來源。
+
+## Day 3 — Trust Engine：Proof + Factor Registry + Policy Gate（2026-08-26，已 commit `8f10675`）
 
 分支 `feature/trust-engine`（從 `feature/case-workflow-ui` 開出，含 Day 1+2）；依 `docs/handoff/DAY3_TRUST_ENGINE_HANDOFF.md` 實作。**尚未 commit、未 tag `v0.3-trust`、未 merge。**
 
@@ -18,11 +39,11 @@
 
 - **真正的 zk-SNARK proving**（Circom/snarkjs、trusted setup）——依 hand-off §13 Cut Plan 自己的 fallback 條款，時間不夠時允許 mock verifier，但 reasonCodes／checks／inputHash 契約必須真（已做到）。
 - Evidence Agent（Day 4）；正式 Factor/Policy Registry 治理（目前 3 筆寫死 Demo 記錄）。
-- 原始《8/24–8/28 雙人落地分工計畫》p.9 的「批次重放（SHIP-A Proof 送到 SHIP-B）→`PROOF_CONTEXT_MISMATCH`」情境——目前架構的 Proof 綁定在案件層級（兩批出貨合計的 `CalculationReceipt.inputHash`），不是逐批次獨立綁定，這個情境無法乾淨測試，是 master plan 與後來 Vibe Coding AI 規格 case-level 架構之間的落差，留待 A/B 討論是否需要調整資料模型。
+- ~~原始《8/24–8/28 雙人落地分工計畫》p.9 的「批次重放（SHIP-A Proof 送到 SHIP-B）→`PROOF_CONTEXT_MISMATCH`」情境無法乾淨測試~~ → **已於上方 P1 修正補上逐批綁定並加測試。**
 
 ### 已知限制
 
-- `smoke:workflow` 回歸基準線本來就是 49/50（`tests/ui/static-contract.js` 1 項既有失敗跟 `_backups/` gitignore 有關，非 Day 3 造成，已回報 A）。
+- ~~`smoke:workflow` 回歸基準線本來就是 49/50（`tests/ui/static-contract.js` 1 項既有失敗）~~ → 已由 `b4a8bef` 修掉，現在是 50/50。
 - 沒有建立 `circuits/`（Circom）目錄；ZKP 部分完全是 §13 fallback 的 demoOnly 檢查。
 - Git tag `v0.3-trust` 未建立（PR #3／#4 都還沒 merge main，比照 Day 1/2 先例，等 merge 順序決定後再打 tag）。
 

@@ -190,19 +190,43 @@
       }
     },
 
+    "ProofPublicInputs": {
+      "type": "object",
+      "description": "NOT IN SPEC 的具體形狀——文件 p.7 只說 ProofEnvelope 有 publicInputs 物件，p.12/分工計畫 p.8 列出欄位群（案件綁定 installationId／reportingYear／shipmentId／quantity；規則綁定 policyVersion／factorSetId；重放防護 nonce／expiry；公開結果 allocatedEmissions／intensity commitment）。Day 3 P1 依此逐批綁定。全部為選填以維持向後相容，但 trust 層對有帶的欄位一律比對。",
+      "additionalProperties": true,
+      "properties": {
+        "caseId": { "type": "string" },
+        "shipmentId": { "type": "string" },
+        "installationId": { "type": "string" },
+        "reportingYear": { "type": "integer" },
+        "quantityTonnesScaled": { "type": "integer", "description": "10^6 定點整數" },
+        "allocatedEmissionsScaled": { "type": "integer", "description": "10^6 定點整數" },
+        "intensityCommitment": { "type": "string", "description": "sha256(intensityScaled + installationId + reportingYear)" },
+        "policyProfileId": { "type": "string" },
+        "policyVersion": { "type": ["string", "null"] },
+        "policySnapshotHash": { "type": ["string", "null"], "description": "Policy Registry 不可變快照摘要" },
+        "factorSetId": { "type": "string" },
+        "factorSetHash": { "type": ["string", "null"], "description": "Factor Registry 不可變快照摘要" },
+        "inputHash": { "type": "string", "description": "綁 CalculationReceipt.inputHash" },
+        "nonce": { "type": "string" },
+        "expiry": { "type": "string", "format": "date-time", "description": "必須等於 ProofEnvelope.expiresAt" }
+      }
+    },
+
     "ProofEnvelope": {
       "type": "object",
-      "description": "文件 p.7——Phase 3 才會實際用到，先卡欄位",
+      "description": "文件 p.7。Day 3 Demo 實作為 commitment fallback（分工計畫 p.9 ZKP 失敗備援第三選擇）：proof 欄位是 demoOnly:sha256: 前綴的 hash commitment，不是 zk-SNARK proof。",
       "required": ["proofId", "circuitId", "publicInputs", "proof", "nonce", "expiresAt", "verificationKeyId"],
       "additionalProperties": true,
       "properties": {
         "proofId": { "type": "string" },
         "circuitId": { "type": "string" },
-        "publicInputs": { "type": "object" },
+        "publicInputs": { "$ref": "#/definitions/ProofPublicInputs" },
         "proof": { "type": "string" },
         "nonce": { "type": "string" },
         "expiresAt": { "type": "string", "format": "date-time" },
-        "verificationKeyId": { "type": "string" }
+        "verificationKeyId": { "type": "string" },
+        "demoOnly": { "type": "boolean" }
       }
     },
 

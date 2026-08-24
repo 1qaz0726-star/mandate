@@ -1,12 +1,18 @@
 'use strict';
 
 const { REASON_CODE } = require('../packages/contracts/enums');
-const { toScaled, addScaled } = require('../packages/contracts/fixedPoint');
+const { toScaled, mulScaled } = require('../packages/contracts/fixedPoint');
 const { buildCalculationReceipt } = require('../services/carbon-core');
 const { resolveFactorSet } = require('../services/factor-registry');
-const { verifyProofEnvelope, generateDemoProofEnvelope } = require('../services/proof');
-const { evaluateGate } = require('../services/policy-gate');
-const normalFixture = require('../fixtures/normal.json');
+const { resolvePolicyProfile } = require('../services/policy-registry');
+const {
+  verifyProofEnvelope,
+  generateDemoProofEnvelope,
+  buildIntensityCommitment,
+  consumeNonces,
+} = require('../services/proof');
+const { evaluateGate, evaluateEvidenceCoverage } = require('../services/policy-gate');
+const workflowStore = require('./workflowStore');
 
 const TRUST_SERVICE_NAMES = ['proof', 'gate'];
 const STABLE_REASON_CODE = /^[A-Z][A-Z0-9_]*$/;
@@ -82,71 +88,371 @@ function validateResult(result) {
 }
 
 // ---------------------------------------------------------------------------
-// Day 3 — 真實 trust engine（services/proof + services/factor-registry +
-// services/policy-gate），取代預設的 unavailable evaluator。
+// Day 3 — 真實 trust engine（services/policy-registry + services/factor-registry +
+// services/proof + services/policy-gate），取代預設的 unavailable evaluator。
 //
-// 誠實揭露：`services/proof` 沒有真的跑 zk-SNARK 電路（見該模組檔頭註解），是
-// demoOnly 的公開輸入綁定檢查，不是 production-grade cryptographic proof。
-// reasonCodes／checks／inputHash 契約是真的、會真的擋下攻擊 fixture，只有「proof
-// bytes 本身有沒有密碼學保證」這件事還沒做，不得對外宣稱已完成正式 ZKP 驗證。
+// 誠實揭露：`services/proof` 沒有跑 zk-SNARK 電路（見該模組檔頭註解），`ProofEnvelope.proof`
+// 是 demoOnly 的 SHA-256 commitment。commitment 會被現場重算並以 timingSafeEqual 比對，
+// 偽造 proof bytes 會被擋；但 commitment 的輸入全部是公開值，因此它**不是** cryptographic
+// proof，不得對外宣稱已完成正式 ZKP 驗證。
+//
+// P1 修正重點：期望值（expected context）一律由本模組從 **workflow store 持有的案件快照**
+// 獨立重建——case、installationYear、shipments、evidence、以及 Policy／Factor Registry 的
+// 權威記錄。呼叫端（workflowApi）傳進來的 `inputHash` 只被當作「宣稱值」拿來比對，絕不當作
+// 期望值使用。
 // ---------------------------------------------------------------------------
 
+function makeCheck(name, status, detail) {
+  return { name, status, detail };
+}
+
 /**
- * 組合 Factor Registry + Proof 驗證 + Policy Gate 三者的結果，映射成
- * trustAdapter.evaluate() 的 { proof, gate } service-readiness 形狀。
- * 刻意獨立匯出（不只是 evaluate() 內部細節），讓 tests/trust 可以直接組出
- * 攻擊情境（自訂 proofEnvelope／factorSetId／policyProfile），不用被 evaluate()
- * 的窄接口（只吃 caseId/policyProfileId/inputHash）綁死。
- *
- * @param {object} input
- * @param {string} input.caseId
- * @param {string} input.policyProfileId
- * @param {string} [input.inputHash] - CalculationReceipt.inputHash；缺失時 proof 判定失敗
- * @param {object} input.policyProfile - canonical PolicyProfile（含 circuitId／allowedFactorSets）
- * @param {string} input.factorSetId
- * @param {object} input.proofEnvelope - canonical ProofEnvelope
- * @param {number} [input.quantityTonnesScaled] - 10^6 定點整數，供 PUBLIC_INPUT_MISMATCH 比對
- * @param {boolean} [input.evidenceReady] - 預設 true；false 時 Gate 直接判 NEEDS_EVIDENCE
- * @param {Date} [input.now]
+ * 從 workflow store 的實際案件快照重建 trust 期望上下文。
+ * 沒有任何一個欄位來自呼叫端輸入。
  */
-function evaluateTrustScenario(input) {
-  const now = input.now instanceof Date ? input.now : new Date();
-  const policyProfile = input.policyProfile || {};
-  const factorResult = resolveFactorSet(input.factorSetId, { policyProfile, now });
+function buildCaseTrustContext(caseId, options = {}) {
+  const now = options.now instanceof Date ? options.now : new Date();
+  const caseRecord = workflowStore.getCase(caseId);
+  const installationYear = workflowStore.getInstallationYear(caseId);
+  const context = workflowStore.getCaseContext(caseId);
+  const carbon = workflowStore.getCarbon(caseId);
+  const evidence = workflowStore.listEvidence(caseId);
 
-  const proofResult = input.inputHash
-    ? verifyProofEnvelope(
-        input.proofEnvelope,
-        {
-          caseId: input.caseId,
-          policyProfileId: input.policyProfileId,
-          circuitId: policyProfile.circuitId,
-          inputHash: input.inputHash,
-          quantityTonnesScaled: input.quantityTonnesScaled,
-        },
-        { now }
-      )
-    : {
-        ok: false,
-        checks: [{ name: 'proof_check', status: 'fail', detail: '尚無可綁定的 CalculationReceipt inputHash，無法驗證 Proof。' }],
-        reasonCodes: [REASON_CODE.PROOF_INVALID],
-      };
+  if (!caseRecord || !installationYear || !context || !carbon) {
+    return {
+      ok: false,
+      reasonCode: REASON_CODE.MISSING_CALCULATION_CONTEXT,
+      detail: `找不到案件 ${caseId} 的完整快照（case／installationYear／context／carbon）。`,
+    };
+  }
 
-  const gateResult = evaluateGate({
-    policyProfileId: input.policyProfileId,
-    factorResult,
-    proofResult,
-    evidenceReady: input.evidenceReady !== false,
-    inputHash: input.inputHash || null,
+  // 1) Policy Registry 是權威來源；案件夾帶的 PolicyProfile 只是宣稱值。
+  const policyResult = resolvePolicyProfile(caseRecord.policyProfileId, {
+    caseRecord,
+    installationYear,
+    declaredPolicyProfile: context.policyProfile,
+    now,
+  });
+  const policyRecord = policyResult.record;
+
+  // 2) Factor Registry：allowedFactorSets 取自 registry 記錄，不取自案件夾帶的 policy。
+  const factorResult = resolveFactorSet(context.factorSet && context.factorSet.factorSetId, {
+    policyProfile: policyRecord || context.policyProfile,
+    factorSet: context.factorSet,
     now,
   });
 
+  // 3) 獨立重算 CalculationReceipt——這是 inputHash 的唯一期望來源。
+  let receipt = null;
+  let receiptError = null;
+  try {
+    receipt = buildCalculationReceipt({
+      installationYear,
+      activities: context.activities,
+      factorSet: context.factorSet,
+      policyProfile: context.policyProfile,
+    });
+  } catch (error) {
+    receiptError = error;
+  }
+
+  // 4) 獨立重算每一批的分攤結果（intensity × quantity），並跟 store 內既有的
+  //    carbon.shipments 逐批比對，攔「案件被改過但沒重新走 carbon-core」。
+  const intensityScaled = toScaled(installationYear.verifiedIntensity);
+  const storedShipments = new Map((carbon.shipments || []).map((shipment) => [shipment.shipmentId, shipment]));
+  const shipmentExpectations = [];
+  const shipmentMismatches = [];
+  for (const shipment of context.shipments || []) {
+    const quantityTonnesScaled = toScaled(shipment.quantityTonnes);
+    const allocatedEmissionsScaled = mulScaled(intensityScaled, quantityTonnesScaled);
+    const stored = storedShipments.get(shipment.shipmentId);
+    if (!stored) {
+      shipmentMismatches.push(`${shipment.shipmentId}（案件快照有這批，但已計算結果裡沒有）`);
+      continue;
+    }
+    if (
+      stored.installationId !== installationYear.installationId ||
+      stored.reportingYear !== installationYear.reportingYear ||
+      stored.caseId !== caseId
+    ) {
+      shipmentMismatches.push(`${shipment.shipmentId}（case／installation／year 綁定不一致）`);
+      continue;
+    }
+    if (toScaled(stored.quantityTonnes) !== quantityTonnesScaled) {
+      shipmentMismatches.push(
+        `${shipment.shipmentId}（已計算數量 ${stored.quantityTonnes} 與案件快照 ${shipment.quantityTonnes} 不一致）`
+      );
+      continue;
+    }
+    if (
+      typeof stored.allocatedEmissions !== 'number' ||
+      toScaled(stored.allocatedEmissions) !== allocatedEmissionsScaled
+    ) {
+      shipmentMismatches.push(
+        `${shipment.shipmentId}（已計算分攤排放與 intensity × quantity 重算結果不一致）`
+      );
+      continue;
+    }
+    shipmentExpectations.push({
+      shipmentId: shipment.shipmentId,
+      caseId,
+      installationId: installationYear.installationId,
+      reportingYear: installationYear.reportingYear,
+      quantityTonnesScaled,
+      allocatedEmissionsScaled,
+      intensityCommitment: buildIntensityCommitment({
+        intensityScaled,
+        installationId: installationYear.installationId,
+        reportingYear: installationYear.reportingYear,
+      }),
+    });
+  }
+
+  // 5) 證據涵蓋期間依實際上傳的 EvidenceItem metadata 計算，不寫死。
+  const evidenceResult = evaluateEvidenceCoverage({
+    installationYear,
+    evidence,
+    requiredEvidence: (policyRecord && policyRecord.requiredEvidence) || context.policyProfile.requiredEvidence,
+  });
+
+  return {
+    ok: true,
+    now,
+    caseId,
+    caseRecord,
+    installationYear,
+    caseContext: context,
+    carbon,
+    evidence,
+    policyResult,
+    policyRecord,
+    factorResult,
+    receipt,
+    receiptError,
+    expectedInputHash: receipt ? receipt.inputHash : null,
+    storedInputHash:
+      carbon.annual && carbon.annual.calculationReceipt ? carbon.annual.calculationReceipt.inputHash : null,
+    intensityScaled,
+    shipmentExpectations,
+    shipmentMismatches,
+    evidenceResult,
+    circuitId: (policyRecord && policyRecord.circuitId) || null,
+    policyVersion: (policyRecord && policyRecord.version) || null,
+    policySnapshotHash: policyResult.policySnapshotHash,
+    factorSetId: context.factorSet && context.factorSet.factorSetId,
+    factorSetHash: factorResult.factorSetHash,
+  };
+}
+
+/** 逐批的期望 public inputs（不含 nonce／expiry，那兩個由 envelope 自己帶）。 */
+function expectedPublicInputs(trustContext, shipmentExpectation) {
+  return {
+    caseId: shipmentExpectation.caseId,
+    shipmentId: shipmentExpectation.shipmentId,
+    installationId: shipmentExpectation.installationId,
+    reportingYear: shipmentExpectation.reportingYear,
+    quantityTonnesScaled: shipmentExpectation.quantityTonnesScaled,
+    allocatedEmissionsScaled: shipmentExpectation.allocatedEmissionsScaled,
+    intensityCommitment: shipmentExpectation.intensityCommitment,
+    policyProfileId: trustContext.caseRecord.policyProfileId,
+    policyVersion: trustContext.policyVersion,
+    policySnapshotHash: trustContext.policySnapshotHash,
+    factorSetId: trustContext.factorSetId,
+    factorSetHash: trustContext.factorSetHash,
+    inputHash: trustContext.expectedInputHash,
+  };
+}
+
+/**
+ * 依 trust context 產生逐批 Demo ProofEnvelope。正式版本這一步會被「向 prover 索取
+ * proof」取代——這裡產生的 envelope 一樣要走完整 verify 流程，不是直接標 verified。
+ */
+function generateShipmentProofEnvelopes(trustContext, options = {}) {
+  return trustContext.shipmentExpectations.map((expectation) =>
+    generateDemoProofEnvelope({
+      circuitId: trustContext.circuitId,
+      publicInputs: expectedPublicInputs(trustContext, expectation),
+      ttlMs: options.ttlMs,
+      now: trustContext.now,
+    })
+  );
+}
+
+/**
+ * 組合 Policy Registry + Factor Registry + 逐批 Proof 驗證 + 證據涵蓋四者的結果，
+ * 映射成 trustAdapter.evaluate() 的 { proof, gate } service-readiness 形狀。
+ *
+ * 刻意獨立匯出，讓 tests/trust 可以直接注入攻擊用的 ProofEnvelope（偽造 commitment、
+ * SHIP-A 套 SHIP-B、竄改數量、換年度／工廠等），而期望值仍然由 buildCaseTrustContext()
+ * 從真實案件快照獨立產生。
+ *
+ * @param {object} input
+ * @param {object} input.trustContext - buildCaseTrustContext() 的結果
+ * @param {object[]} input.proofEnvelopes - 逐批 ProofEnvelope（順序不重要，用 shipmentId 對）
+ * @param {string} [input.claimedInputHash] - 呼叫端宣稱的 inputHash，只用來比對，不當期望值
+ */
+function evaluateTrustScenario(input) {
+  const trustContext = input.trustContext;
+  const now = trustContext.now instanceof Date ? trustContext.now : new Date();
+  const envelopes = Array.isArray(input.proofEnvelopes) ? input.proofEnvelopes : [];
+  const inputHash = trustContext.expectedInputHash;
+
+  const preflightChecks = [];
+  const preflightReasonCodes = [];
+
+  if (trustContext.receiptError || !inputHash) {
+    preflightChecks.push(
+      makeCheck('receipt_recompute', 'fail', '無法從案件快照重算 CalculationReceipt，Proof 無可綁定的 inputHash。')
+    );
+    preflightReasonCodes.push(REASON_CODE.MISSING_CALCULATION_CONTEXT);
+  } else {
+    preflightChecks.push(makeCheck('receipt_recompute', 'pass', '已從案件快照獨立重算 CalculationReceipt.inputHash'));
+    if (trustContext.storedInputHash && trustContext.storedInputHash !== inputHash) {
+      preflightChecks.push(
+        makeCheck('stored_receipt_binding', 'fail', '已存檔的 CalculationReceipt.inputHash 與重算結果不一致。')
+      );
+      preflightReasonCodes.push(REASON_CODE.PUBLIC_INPUT_MISMATCH);
+    } else {
+      preflightChecks.push(makeCheck('stored_receipt_binding', 'pass', '已存檔的 CalculationReceipt 與重算結果一致'));
+    }
+    // 呼叫端宣稱的 inputHash 只能被驗證，不能被採信。
+    if (input.claimedInputHash !== undefined && input.claimedInputHash !== null) {
+      if (input.claimedInputHash !== inputHash) {
+        preflightChecks.push(
+          makeCheck('caller_input_hash', 'fail', '呼叫端提供的 inputHash 與系統重算結果不一致，拒絕採信。')
+        );
+        preflightReasonCodes.push(REASON_CODE.PUBLIC_INPUT_MISMATCH);
+      } else {
+        preflightChecks.push(makeCheck('caller_input_hash', 'pass', '呼叫端提供的 inputHash 與系統重算結果一致'));
+      }
+    }
+  }
+
+  if (trustContext.shipmentMismatches.length) {
+    preflightChecks.push(
+      makeCheck('shipment_recompute', 'fail', `批次重算與已存檔結果不一致：${trustContext.shipmentMismatches.join('；')}`)
+    );
+    preflightReasonCodes.push(REASON_CODE.CASE_CONTEXT_MISMATCH);
+  } else {
+    preflightChecks.push(
+      makeCheck('shipment_recompute', 'pass', `${trustContext.shipmentExpectations.length} 批分攤已用 intensity × quantity 獨立重算並與已存檔結果一致`)
+    );
+  }
+
+  const preflightResult = {
+    ok: preflightReasonCodes.length === 0,
+    checks: preflightChecks,
+    reasonCodes: preflightReasonCodes,
+  };
+
+  // 逐批驗證：每一批都必須有一份綁到「這一批」的 ProofEnvelope。
+  const envelopeByShipment = new Map();
+  for (const envelope of envelopes) {
+    const claimed = envelope && envelope.publicInputs && envelope.publicInputs.shipmentId;
+    if (claimed !== undefined && !envelopeByShipment.has(claimed)) envelopeByShipment.set(claimed, envelope);
+  }
+
+  const proofResults = [];
+  const usedEnvelopes = new Set();
+  trustContext.shipmentExpectations.forEach((expectation, index) => {
+    // 先照 shipmentId 對；對不到就照順序取一份，讓「SHIP-A proof 送到 SHIP-B」這種
+    // 攻擊真的走進 verify 並被 PROOF_CONTEXT_MISMATCH 擋下，而不是靜默略過。
+    let envelope = envelopeByShipment.get(expectation.shipmentId);
+    if (!envelope) envelope = envelopes[index];
+    if (!envelope || usedEnvelopes.has(envelope)) {
+      proofResults.push({
+        ok: false,
+        checks: [
+          makeCheck('proof_check', 'fail', `[${expectation.shipmentId}] 缺少對應的 ProofEnvelope。`),
+        ],
+        reasonCodes: [REASON_CODE.PROOF_INVALID],
+      });
+      return;
+    }
+    usedEnvelopes.add(envelope);
+    proofResults.push(
+      verifyProofEnvelope(
+        envelope,
+        {
+          ...expectedPublicInputs(trustContext, expectation),
+          circuitId: trustContext.circuitId,
+        },
+        { now }
+      )
+    );
+  });
+
+  if (!trustContext.shipmentExpectations.length) {
+    proofResults.push({
+      ok: false,
+      checks: [makeCheck('proof_check', 'fail', '案件沒有任何可驗證的批次。')],
+      reasonCodes: [REASON_CODE.CASE_CONTEXT_MISMATCH],
+    });
+  }
+
+  const gateResult = evaluateGate({
+    policyProfileId: trustContext.caseRecord.policyProfileId,
+    policyResult: trustContext.policyResult,
+    factorResult: trustContext.factorResult,
+    proofResults: [preflightResult, ...proofResults],
+    evidenceResult: trustContext.evidenceResult,
+    inputHash: inputHash || trustContext.storedInputHash || null,
+    now,
+  });
+
+  const proofOk = preflightResult.ok && proofResults.every((result) => result.ok);
+  const proofChecks = [...preflightChecks, ...proofResults.flatMap((result) => result.checks || [])];
+  const proofReasonCodes = proofOk
+    ? []
+    : [...new Set([...preflightReasonCodes, ...proofResults.flatMap((result) => (result.ok ? [] : result.reasonCodes || []))])];
+
+  // nonce 只有在「所有批次 Proof 驗證通過 + Gate 判 GATE_OK」之後才原子消費。
+  // 失敗的請求完全不動 ledger，攻擊者無法用大量無效請求把正常 nonce 毒掉。
+  let nonceConsumption = null;
+  if (proofOk && gateResult.decision === 'GATE_OK') {
+    const nonces = proofResults.map((result) => result.nonce).filter(Boolean);
+    nonceConsumption = consumeNonces(nonces, { now });
+    if (!nonceConsumption.ok) {
+      const detail =
+        nonceConsumption.reason === 'LEDGER_CAPACITY_EXCEEDED'
+          ? 'Demo nonce ledger 已達容量上限，無法登錄本次 nonce。'
+          : `nonce 原子消費失敗（${nonceConsumption.reason}${nonceConsumption.nonce ? `：${nonceConsumption.nonce}` : ''}）。`;
+      proofChecks.push(makeCheck('nonce_consume', 'fail', detail));
+      const reasonCode =
+        nonceConsumption.reason === 'LEDGER_CAPACITY_EXCEEDED' ? REASON_CODE.PROOF_INVALID : REASON_CODE.NONCE_REUSED;
+      return finalize({
+        trustContext,
+        proofOk: false,
+        proofChecks,
+        proofReasonCodes: [reasonCode],
+        gateResult: {
+          ...gateResult,
+          decision: 'BLOCKED',
+          reasonCodes: [reasonCode],
+          checks: [...gateResult.checks, makeCheck('nonce_consume', 'fail', detail)],
+        },
+        inputHash,
+      });
+    }
+    proofChecks.push(
+      makeCheck('nonce_consume', 'pass', `${nonceConsumption.consumed.length} 個 nonce 已在全部驗證通過後原子登錄`)
+    );
+  } else {
+    proofChecks.push(
+      makeCheck('nonce_consume', 'skipped', '本次驗證未全部通過，未消費任何 nonce（失敗請求不占用 nonce）')
+    );
+  }
+
+  return finalize({ trustContext, proofOk, proofChecks, proofReasonCodes, gateResult, inputHash });
+}
+
+function finalize({ proofOk, proofChecks, proofReasonCodes, gateResult, inputHash }) {
   const proof = {
     status: 'available',
-    verification: proofResult.ok ? 'verified' : 'failed',
-    checks: proofResult.checks,
-    reasonCodes: proofResult.ok ? [] : proofResult.reasonCodes,
-    ...(proofResult.ok && proofResult.inputHash ? { inputHash: proofResult.inputHash } : {}),
+    verification: proofOk ? 'verified' : 'failed',
+    checks: proofChecks,
+    reasonCodes: proofOk ? [] : proofReasonCodes,
+    ...(proofOk && inputHash ? { inputHash } : {}),
   };
   const gate = {
     status: 'available',
@@ -155,74 +461,44 @@ function evaluateTrustScenario(input) {
     reasonCodes: gateResult.reasonCodes,
     ...(gateResult.decision === 'GATE_OK' && gateResult.inputHash ? { inputHash: gateResult.inputHash } : {}),
   };
-
   return { proof, gate, gateResult };
 }
 
 /**
- * Demo 案件（CASE-2026-001，唯一一份 fixtures/normal.json）目前「正確答案」的
- * 情境上下文——policyProfile／factorSetId／inputHash／quantityTonnesScaled 都是
- * 依 normalFixture 現場重算，不是寫死的常數，normalFixture 改了這裡就會跟著變。
- */
-function getDemoContext() {
-  const receipt = buildCalculationReceipt({
-    installationYear: normalFixture.installationYear,
-    activities: normalFixture.activities,
-    factorSet: normalFixture.factorSet,
-    policyProfile: normalFixture.policyProfile,
-  });
-  const quantityTonnesScaled = (normalFixture.shipments || []).reduce(
-    (sum, shipment) => addScaled(sum, toScaled(shipment.quantityTonnes)),
-    0
-  );
-  return {
-    caseId: normalFixture.case.caseId,
-    policyProfile: normalFixture.policyProfile,
-    factorSetId: normalFixture.factorSet.factorSetId,
-    inputHash: receipt.inputHash,
-    quantityTonnesScaled,
-  };
-}
-
-/**
- * 正式（非 unavailable）evaluator：每次呼叫都針對「當下」的 Demo 案件重新產生一份
- * ProofEnvelope 並重新跑完整驗證鏈——不是回傳寫死的 verified 結果。只要
- * fixtures/normal.json 的資料本身沒被竄改，這裡永遠會驗證通過；如果 workflowApi
- * 傳進來的 inputHash 跟這裡重算的不一致（代表案件被改過但沒重新走 carbon-core），
- * 一樣會被 verifyProofEnvelope 的 PUBLIC_INPUT_MISMATCH 檔下來。
+ * 正式（非 unavailable）evaluator：每次呼叫都從 workflow store 當下的案件快照重建
+ * 期望上下文、重新產生逐批 ProofEnvelope、再跑完整驗證鏈。呼叫端傳進來的 inputHash
+ * 只被當成宣稱值比對；任何人塞任意 inputHash 都會得到 PUBLIC_INPUT_MISMATCH。
  */
 async function productionEvaluator(input) {
-  const context = getDemoContext();
-  const caseId = (input && input.caseId) || context.caseId;
-  const policyProfileId = (input && input.policyProfileId) || context.policyProfile.policyProfileId;
-  const inputHash = (input && input.inputHash) || context.inputHash;
+  const caseId = (input && input.caseId) || workflowStore.DEMO_CASE_ID;
+  const trustContext = buildCaseTrustContext(caseId);
+  if (!trustContext.ok) {
+    return {
+      proof: {
+        status: 'error',
+        verification: 'failed',
+        checks: [makeCheck('case_snapshot', 'fail', trustContext.detail)],
+        reasonCodes: [trustContext.reasonCode],
+      },
+      gate: {
+        status: 'error',
+        verification: 'failed',
+        checks: [makeCheck('case_snapshot', 'fail', trustContext.detail)],
+        reasonCodes: [trustContext.reasonCode],
+      },
+    };
+  }
 
-  const proofEnvelope = generateDemoProofEnvelope({
-    caseId,
-    policyProfileId,
-    circuitId: context.policyProfile.circuitId,
-    inputHash,
-    quantityTonnesScaled: context.quantityTonnesScaled,
-  });
-
+  const proofEnvelopes = generateShipmentProofEnvelopes(trustContext);
   const { proof, gate } = evaluateTrustScenario({
-    caseId,
-    policyProfileId,
-    inputHash,
-    policyProfile: context.policyProfile,
-    factorSetId: context.factorSetId,
-    proofEnvelope,
-    quantityTonnesScaled: context.quantityTonnesScaled,
-    evidenceReady: true,
+    trustContext,
+    proofEnvelopes,
+    claimedInputHash: input && input.inputHash,
   });
   return { proof, gate };
 }
 
-// 冷開機（module 第一次被 require，還沒有任何測試呼叫過
-// setEvaluatorForTests/resetEvaluatorForTests）預設走這個正式 evaluator，讓真正的
-// server（npm start / wrangler dev，從來不會呼叫測試專用的 setter）一啟動
-// revalidate 就是 Day 3 真實信任引擎，不用額外在 server/index.js 或 worker/index.js
-// 另外接線。resetEvaluatorForTests() 刻意維持原本語意（見下方），不受這個改動影響。
+// 冷開機預設就是正式 evaluator，真正的 server（npm start / wrangler dev）不需要另外接線。
 let evaluator = productionEvaluator;
 
 async function evaluate(input) {
@@ -237,16 +513,13 @@ function setEvaluatorForTests(nextEvaluator) {
 }
 
 /**
- * 刻意重置回「服務不可用」的 stub，不是重置回 productionEvaluator——延續 Day 2
- * 既有 smoke test 的契約（tests/workflow/smoke.js「revalidate: default adapter
- * 回 unavailable 且不會 READY」），沒有測試會因為 Day 3 接了真引擎而改變語意。
- * 想要在測試裡驗證真引擎行為，改用 `setEvaluatorForTests(productionEvaluator)`
- * 或直接呼叫 `evaluateTrustScenario`/`getDemoContext`。
+ * P1 修正：重置回**正式** evaluator，不再是 unavailable stub。
+ * 「重置」的語意應該是回到系統真正的預設行為；需要驗證 unavailable 路徑的測試，
+ * 請明確 `setEvaluatorForTests(async () => trustAdapter.unavailableResult())`，
+ * 讓「這個測試刻意讓服務掛掉」這件事在測試碼裡看得見。
  */
 function resetEvaluatorForTests() {
-  evaluator = async function evaluateUnavailable() {
-    return unavailableResult();
-  };
+  evaluator = productionEvaluator;
 }
 
 module.exports = {
@@ -256,7 +529,9 @@ module.exports = {
   unavailableResult,
   validateResult,
   // Day 3 exports — trust engine 內部組件，供 tests/trust 直接組攻擊情境使用。
+  buildCaseTrustContext,
+  expectedPublicInputs,
+  generateShipmentProofEnvelopes,
   evaluateTrustScenario,
-  getDemoContext,
   productionEvaluator,
 };

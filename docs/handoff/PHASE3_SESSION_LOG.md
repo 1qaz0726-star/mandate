@@ -1,7 +1,30 @@
 # Day 3 Session Log — Trust Engine（ZKP-lite Proof + Factor Registry + Policy Gate）
 
-> 對應 `DAY3_TRUST_ENGINE_HANDOFF.md`。撰寫者：B（葉士愷）。**working tree 尚未 commit**——
-> 這份記錄先寫給隊友 review，確認後才會正式 commit 進 `feature/trust-engine` 分支。
+> 對應 `DAY3_TRUST_ENGINE_HANDOFF.md`。撰寫者：B（葉士愷）。原始 Day 3 內容已 commit 於 `8f10675`。
+
+> **2026-08-24 P1 修正（working tree，尚未 commit）**——獨立審查在這份 Day 3 交付上找到數個
+> P1，已修正，因此本文以下段落有幾處**已不再成立**，逐條列在這裡，內文只做最小修正：
+>
+> 1. **§2 的「任何格式正確的 demoOnly proof 都會通過」已不成立**：`ProofEnvelope.proof` 的
+>    commitment 現在會現場重算並以 `crypto.timingSafeEqual` 比對，偽造 proof bytes 回
+>    `PROOF_INVALID`。但它仍然只是 hash commitment（輸入全是公開值），**仍然不是** zk-SNARK，
+>    `cryptographic_proof` 這個 check 仍然標 `skipped`。
+> 2. **evaluator 不再自簽自驗**：期望值改由 `trustAdapter.buildCaseTrustContext()` 從
+>    workflow store 的真實案件快照 + Policy／Factor Registry 權威記錄獨立重建；呼叫端傳來的
+>    `inputHash` 只被當宣稱值比對。
+> 3. **Proof 改為逐批綁定**，SHIP-A 的 proof 套到 SHIP-B 會回 `PROOF_CONTEXT_MISMATCH`
+>    （§3 與 README 舊版說「架構是 case-level、這個情境沒法測」的落差已補上）。
+> 4. **§4 已不成立**：`resetEvaluatorForTests()` 現在重置回**正式 evaluator**；需要
+>    unavailable 的測試改為明確 `setEvaluatorForTests(async () => unavailableResult())`。
+> 5. **§5 已不成立**：`tests/ui/static-contract.js` 的備份檔案假設已由 `b4a8bef` 修掉，
+>    `smoke:workflow` 現在是真的 50/50。
+> 6. **§8 的 nonce 限制已更新**：nonce ledger 有 TTL 與容量上限、只在全部驗證通過後原子消費、
+>    失敗請求不占用 nonce，並提供 `setNonceLedger()` adapter hook。**跨 isolate 仍不保證**，
+>    Workers 上不得宣稱完整 replay protection。
+> 7. **證據涵蓋期間不再寫死**：由實際上傳的 EvidenceItem metadata 計算，缺半年會讓真實
+>    HTTP E2E 回 `NEEDS_EVIDENCE`／`EVIDENCE_PERIOD_INCOMPLETE`。
+> 8. 新增 `services/policy-registry`（immutable policy snapshot 檢查）。
+> 9. 測試數：`smoke:trust` 19 → **43**。
 
 ## 1. 一句話總結
 

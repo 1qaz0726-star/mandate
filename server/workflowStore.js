@@ -59,6 +59,22 @@ function createInitialState() {
     ],
     installationYears: [clone(normalFixture.installationYear)],
     carbonByCase: new Map([[DEMO_CASE_ID, carbon]]),
+    // 案件的計算上下文快照（activities／factorSet／policyProfile／原始 shipments）。
+    // Day 3 P1 修正：trust 層必須從「workflow 實際持有的案件快照」重建期望值，不能自己
+    // 去 require fixtures/normal.json，也不能相信呼叫端夾帶的 inputHash。
+    caseContexts: new Map([
+      [
+        DEMO_CASE_ID,
+        {
+          caseId: DEMO_CASE_ID,
+          activities: clone(normalFixture.activities),
+          factorSet: clone(normalFixture.factorSet),
+          policyProfile: clone(normalFixture.policyProfile),
+          shipments: clone(normalFixture.shipments),
+          demoOnly: true,
+        },
+      ],
+    ]),
     evidence: [],
     grants: [],
     findings: [],
@@ -120,6 +136,15 @@ function setCaseWorkflow(caseId, patch) {
 function getInstallationYear(caseId) {
   if (caseId !== DEMO_CASE_ID) return null;
   return state.installationYears[0] ? clone(state.installationYears[0]) : null;
+}
+
+/**
+ * 案件的計算上下文快照（唯讀 clone）。trust 引擎用這份重建期望值，避免直接讀 fixture
+ * 或相信外部輸入。
+ */
+function getCaseContext(caseId) {
+  const context = state.caseContexts.get(caseId);
+  return context ? clone(context) : null;
 }
 
 function getCarbon(caseId) {
@@ -335,6 +360,7 @@ module.exports = {
   consumeGrant,
   getCarbon,
   getCase,
+  getCaseContext,
   getEvidence,
   getGrant,
   getGrantByTokenHash,

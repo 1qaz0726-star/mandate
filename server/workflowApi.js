@@ -155,6 +155,10 @@ function evidenceReadiness(caseId) {
   };
 }
 
+// 缺件類 reason code 對應規格 p.13 Final Mapping 的「缺件→NEEDS_EVIDENCE」，
+// 跟授權／Proof／係數這類「硬失敗→BLOCKED」不同層次。
+const EVIDENCE_REASON_CODES = new Set(['EVIDENCE_MISSING', 'EVIDENCE_PERIOD_INCOMPLETE']);
+
 function calculateReadiness(caseId) {
   const evidence = evidenceReadiness(caseId);
   const services = workflowStore.getServices();
@@ -165,6 +169,15 @@ function calculateReadiness(caseId) {
     const reasonCodes = [
       ...new Set(failed.flatMap((service) => service.reasonCodes || [])),
     ];
+    if (reasonCodes.length && reasonCodes.every((code) => EVIDENCE_REASON_CODES.has(code))) {
+      return {
+        status: 'NEEDS_EVIDENCE',
+        readiness: 'not_verified',
+        reasonCodes,
+        message: '證據缺件或涵蓋期間不完整，案件回到 NEEDS_EVIDENCE；補齊後可重驗。',
+        services,
+      };
+    }
     return {
       status: 'BLOCKED',
       readiness: 'failed',

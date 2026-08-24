@@ -7,7 +7,7 @@
 
 工程規格優先權與 Day 2 交棒詳見 [`docs/handoff/DAY2_EXECUTION_PLAN.md`](docs/handoff/DAY2_EXECUTION_PLAN.md)。Day 2 決策摘要：[`docs/handoff/PHASE2_SESSION_LOG.md`](docs/handoff/PHASE2_SESSION_LOG.md)。Day 3 trust engine 手冊：[`docs/handoff/DAY3_TRUST_ENGINE_HANDOFF.md`](docs/handoff/DAY3_TRUST_ENGINE_HANDOFF.md)。Day 3 決策摘要：[`docs/handoff/PHASE3_SESSION_LOG.md`](docs/handoff/PHASE3_SESSION_LOG.md)。
 
-> **Git**：Day 3 程式（`services/proof`／`services/factor-registry`／`services/policy-gate`／`trustAdapter.js` 接線）目前在 `feature/trust-engine` **working tree，尚未 commit**（此分支從 `feature/case-workflow-ui` 開出，含 Day 1+2 內容）。
+> **Git**：Day 3 trust engine 已 commit（`8f10675`），目前分支 `feature/agent-demo-integration`。Day 3 獨立審查發現的 **Trust Engine P1 修正**（見下）目前在 **working tree，尚未 commit**。
 
 ---
 
@@ -24,11 +24,9 @@ npm start
 
 ```bash
 npm run smoke:carbon-core   # 36 項
-npm run smoke:workflow      # workflow 34 + UI 16 = 50 項（UI 有 1 項既有失敗，跟本階段無關，見下）
-npm run smoke:trust         # Day 3：proof/factor-registry/policy-gate + 攻擊矩陣，19 項
+npm run smoke:workflow      # workflow 34 + UI 16 = 50 項
+npm run smoke:trust         # Trust engine：4 個服務單元 + 攻擊矩陣 + E2E，43 項
 ```
-
-> **已知落差**：`tests/ui/static-contract.js` 有 1 項測試依賴 `_backups/20260825/...bak-20260825` 這幾個本機檔案，但同一個 PR 的 `.gitignore` 排除了 `_backups/`，導致任何乾淨 checkout 這項都會 FAIL（`smoke:workflow` 實際是 49/50，不是 50/50）。已回報給 A；不影響其餘 49 項與 Day 3 工作。
 
 Playwright 驗收截圖：[`docs/handoff/screenshots/day2/`](docs/handoff/screenshots/day2/)（supplier / importer / verifier / vault-denied）。
 
@@ -56,15 +54,17 @@ API 範例：[`docs/handoff/DAY2_API_EXAMPLES.json`](docs/handoff/DAY2_API_EXAMP
 
 ---
 
-## Day 3 Trust Engine（`services/proof` + `services/factor-registry` + `services/policy-gate`）
+## Trust Engine（`services/proof` + `services/factor-registry` + `services/policy-registry` + `services/policy-gate`）
 
-`server/trustAdapter.js` 的 evaluator 從預設 `unavailable` 換成真引擎：normal fixture 走完整 HTTP 流程（Supplier 上傳→確認→提交→`POST /api/workflow/revalidate`）會推到 `READY_FOR_VERIFIER`；§10 八項攻擊情境（`tampered_quantity`／`replayed`／`revoked`／`expiry`／`nonce` 缺失／`wrong_factor`／`missing_period`）全部回穩定 `BLOCKED`／`NEEDS_EVIDENCE` 與對應 reason code。
+`server/trustAdapter.js` 的 evaluator 是真引擎：normal fixture 走完整 HTTP 流程（Supplier 上傳→確認→提交→`POST /api/workflow/revalidate`）會推到 `READY_FOR_VERIFIER`；攻擊情境（偽造 proof、任意 `inputHash`、SHIP-A proof 套 SHIP-B、換年度／工廠／政策／係數、`tampered_quantity`、`replayed`、`revoked`、`expiry`、`nonce` 缺失、`wrong_factor`、`missing_period`）全部回穩定 `BLOCKED`／`NEEDS_EVIDENCE` 與對應 reason code。
 
-> **⚠️ 誠實揭露：這不是真的 zk-SNARK。** `services/proof` 沒有跑 Circom/snarkjs，`ProofEnvelope.proof` 是 `demoOnly` 的 sha256 摘要示意，不是密碼學證明——這是 [`DAY3_TRUST_ENGINE_HANDOFF.md`](docs/handoff/DAY3_TRUST_ENGINE_HANDOFF.md) §13 Cut Plan 自己允許的 fallback。**真的**做到的部分：公開輸入（`inputHash`／`quantityTonnesScaled`／`caseId`／`policyProfileId`）逐項跟系統當下重算值比對、nonce 防重放、`circuitId` 與 `PolicyProfile` 綁定、Proof 過期檢查、Factor Registry 的 revoked／expired／allowed-list 判斷。demo 前務必讓所有人知道「ZKP 已完成」不是正確講法。詳見 [`docs/handoff/PHASE3_SESSION_LOG.md`](docs/handoff/PHASE3_SESSION_LOG.md) §2。
+期望值（expected context）一律由 `trustAdapter.buildCaseTrustContext()` 從 **workflow store 持有的案件快照**（case／installationYear／shipments／evidence）與 **Policy／Factor Registry 的權威記錄**獨立重建；`revalidate` 呼叫端傳進來的 `inputHash` 只被當作宣稱值比對，塞任意值會得到 `PUBLIC_INPUT_MISMATCH`。Proof 是**逐批**綁定（caseId／shipmentId／installationId／reportingYear／quantityTonnesScaled／allocatedEmissionsScaled／intensity commitment／policyProfileId／policyVersion／policySnapshotHash／factorSetId／factorSetHash／inputHash／nonce／expiry）。
 
-**已知落差**：原始《8/24–8/28 雙人落地分工計畫》Day 3 攻擊驗收表（p.9）另外列了「批次重放：SHIP-A 的 Proof 改送到 SHIP-B → `PROOF_CONTEXT_MISMATCH`」，但目前架構的 Proof 綁定在**案件層級**的 `CalculationReceipt.inputHash`（涵蓋兩批出貨合計），不是逐批次獨立綁定，這個情境沒有乾淨的方式在現有介面下測試——不是遺漏，是原始 master plan（假設逐批次 ZKP）跟後來《Vibe Coding AI 規格》定案的 case-level 架構之間的落差，需要 A／B 一起決定要不要調整。
+> **⚠️ 誠實揭露：這不是真的 zk-SNARK。** `services/proof` 沒有跑 Circom/snarkjs。`ProofEnvelope.proof` 是 `demoOnly:sha256:` 前綴的 **hash commitment**——這是《8/24–8/28 雙人落地分工計畫》p.9「ZKP 失敗備援順序」第三選擇（以 commitment／Hash 驗證流程展示，清楚標示 ZKP 尚未在該環境執行）。commitment 會被**現場重算並以 `crypto.timingSafeEqual` 比對**，偽造 proof bytes 會回 `PROOF_INVALID`；但 commitment 的輸入全部是公開值，任何人拿到 publicInputs 都能自己算出同一串，所以它**不是**密碼學證明、也不是簽章。`checks` 裡的 `cryptographic_proof` 永遠標 `skipped` 留痕。demo 前務必讓所有人知道「ZKP 已完成」不是正確講法。
+>
+> **Nonce／重放的邊界**：nonce ledger 是**單一 process 記憶體**（含 TTL 與容量上限），只有在整組驗證通過後才原子消費，失敗請求不占用 nonce。Cloudflare Workers 是多 isolate 執行，**跨 isolate 不共享**這份記錄——Workers 上只能宣稱「單 isolate 內偵測到重放」，**不得宣稱完整 replay protection**。要接持久化版本用 `services/proof` 的 `setNonceLedger(adapter)` hook（Durable Object／KV／D1）。
 
-測試：`tests/trust/smoke.js`（19 項，`npm run smoke:trust`）。
+測試：`tests/trust/smoke.js`（43 項，`npm run smoke:trust`）。
 
 ---
 
@@ -100,7 +100,7 @@ npm start
 | `npm start` | 啟動 `server/index.js`（port **3847**） |
 | `npm run smoke:carbon-core` | Phase 1 計算核心 + schema validator（36 項） |
 | `npm run smoke:workflow` | Day 2 workflow API + UI 靜態契約 |
-| `npm run smoke:trust` | Day 3 proof/factor-registry/policy-gate + 攻擊矩陣（19 項） |
+| `npm run smoke:trust` | Trust engine proof/factor-registry/policy-registry/policy-gate + 攻擊矩陣 + E2E（43 項） |
 | `npm run smoke:ui` | 僅 UI 靜態契約 |
 | `npm run smoke` | Legacy policy（12 vectors + 4 trace） |
 | `npm run smoke:agent` | Legacy agent（需 Key，無 Key 則 SKIP） |
@@ -125,13 +125,14 @@ normal Demo 由明確標 `demoOnly` 的 activities/factors 計算 `360 tCO2e ÷ 
 | `public/index.html` | **Day 2** 三角色 Root UI |
 | `public/legacy.html` | Legacy PCF 三欄工作台 |
 | `server/workflowApi.js` | Day 2 workflow + Vault API |
-| `server/trustAdapter.js` | Trust evaluate 接點；Day 3 起接真 `services/proof`/`factor-registry`/`policy-gate` |
+| `server/trustAdapter.js` | Trust evaluate 接點；從案件快照獨立建 expected context，串 proof／factor-registry／policy-registry／policy-gate |
 | `server/carbonAdapter.js` | carbon-core 整合與 service stubs |
 | `packages/contracts/` | Canonical schema、enums、validator |
 | `services/carbon-core/` | 年度／批次計算（唯一數字來源） |
-| `services/proof/` | Day 3：ProofEnvelope 驗證（`demoOnly`，非真 zk-SNARK，見上） |
-| `services/factor-registry/` | Day 3：FactorSet 查詢（active/expired/revoked） |
-| `services/policy-gate/` | Day 3：組合 proof+factor 結果為 `GateResult` |
+| `services/proof/` | 逐批 ProofEnvelope 驗證 + demoOnly commitment 重算 + nonce ledger（非真 zk-SNARK，見上） |
+| `services/factor-registry/` | FactorSet 權威記錄（issuer/purpose/version/sourceHash、active/expired/revoked） |
+| `services/policy-registry/` | PolicyProfile 權威記錄與 immutable snapshot 比對（CN code／年度／circuit／requiredEvidence／status） |
+| `services/policy-gate/` | 證據涵蓋期間計算，並組合 policy+factor+逐批 proof 為 `GateResult` |
 | `tests/workflow/`、`tests/ui/` | Day 2 煙測 |
 | `tests/trust/` | Day 3 煙測（單元 + 攻擊矩陣 + E2E） |
 | `docs/handoff/` | Day 1 / Day 2 / Day 3 交棒文件 |

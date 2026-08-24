@@ -355,8 +355,10 @@ async function main() {
     assert.ok(!JSON.stringify(response.body).includes('internal adapter detail'));
   });
 
-  await check('revalidate: default adapter 回 unavailable 且不會 READY', async () => {
-    trustAdapter.resetEvaluatorForTests();
+  await check('revalidate: 明確注入 unavailable evaluator 時不會 READY', async () => {
+    // resetEvaluatorForTests() 現在會回到「正式 evaluator」（Day 3 P1 修正）；
+    // 想驗 unavailable 路徑就必須在測試裡明講，不能靠 reset 的副作用。
+    trustAdapter.setEvaluatorForTests(async () => trustAdapter.unavailableResult());
     const response = await api('POST', '/api/workflow/revalidate', 'Supplier', {});
     assert.strictEqual(response.status, 200);
     assert.strictEqual(response.body.case.status, 'METHOD_REVIEW');
