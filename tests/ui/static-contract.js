@@ -12,7 +12,7 @@ const legacyPath = path.join(PUBLIC, 'legacy.html');
 const scriptPath = path.join(PUBLIC, 'js', 'case-workflow.js');
 const stylePath = path.join(PUBLIC, 'css', 'case-workflow.css');
 const serverPath = path.join(ROOT, 'server', 'index.js');
-const backupRoot = path.join(ROOT, '_backups', '20260825', 'public');
+const gitignorePath = path.join(ROOT, '.gitignore');
 
 let failed = 0;
 
@@ -185,7 +185,7 @@ check('assets: 新版 CSS 與 JS 檔案存在', () => {
   assert.ok(index.includes('js/case-workflow.js'));
 });
 
-check('static server: 遞迴阻擋 public 備份且保留於 _backups', () => {
+check('static server: 遞迴阻擋 public 備份且不依賴本機備份', () => {
   const leakedBackups = listFilesRecursively(PUBLIC)
     .filter((filePath) => path.basename(filePath).includes('.bak-'));
   assert.deepStrictEqual(
@@ -193,18 +193,8 @@ check('static server: 遞迴阻擋 public 備份且保留於 _backups', () => {
     [],
     `public backups leaked: ${leakedBackups.map((filePath) => path.relative(PUBLIC, filePath)).join(', ')}`
   );
-  for (const relativePath of [
-    'index.html.bak-20260825',
-    path.join('js', 'app.js.bak-20260825'),
-    path.join('js', 'case-workflow.js.bak-20260825'),
-    path.join('css', 'app.css.bak-20260825'),
-    path.join('css', 'case-workflow.css.bak-20260825'),
-  ]) {
-    assert.ok(
-      fs.existsSync(path.join(backupRoot, relativePath)),
-      `preserved backup missing: ${relativePath}`
-    );
-  }
+  assert.match(read(gitignorePath), /^_backups\/$/m);
+  assert.match(read(gitignorePath), /^\*\.bak-\*$/m);
   assert.ok(serverSource.includes("path.basename(rel).includes('.bak-')"));
   assert.ok(serverSource.includes("sendJson(res, 404, { error: 'Not found' })"));
 });
