@@ -11,8 +11,14 @@ const PROMPT_VERSION = 'evidence-risk-contract-v1';
 const MAX_ENTRIES_PER_EVIDENCE = 100;
 const MAX_ENTRIES_PER_CASE = 250;
 const MAX_CITATIONS_PER_CASE = 250;
+// 刻意只比對「完整的注入語句／片語」，不比對 pass／deny／submit／提交這類單獨常見字——
+// 這些字在一般業務文件、甚至 Evidence Agent 自己生成的客套回覆裡都會自然出現（例如
+// 「我不能執行或提交任何操作」），命中就整份丟棄的話會造成大量假陽性，2026-08-28 發現
+// AI 自己上一輪的回覆內容經 sanitizeChatHistory 重新掃描時觸發了這道防線，把自己下一輪
+// 反鎖。收斂成片語後，真正的注入攻擊（見 tests/agent/smoke.js／tests/workflow/smoke.js
+// 的攻擊矩陣）仍然全部命中，因為那些測試字串都帶著這裡列的完整片語。
 const INJECTION_PATTERN =
-  /ignore\s+previous\s+instructions|mark\s+pass|\bpass\b|\bdeny\b|cbam\s+certified|officially\s+approved|decrypt|submit|system\s+prompt|忽略(?:先前|之前|規則)|直接放行|解密|提交/iu;
+  /ignore\s+previous\s+instructions|mark\s+pass|cbam\s+certified|officially\s+approved|decrypt|system\s+prompt|忽略(?:先前|之前|規則)|直接放行|解密/iu;
 const SAFE_FIELD = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
 const SAFE_UNIT = /^[A-Za-z0-9%/_. -]{1,24}$/;
 const SAFE_SOURCE_FILE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -158,6 +164,32 @@ function parseEvidence(item, text) {
     }
   }
   return parseTextEntries(text);
+}
+
+/**
+ * 2026-08-29：真的拿一張民國 101 年電費單重複上傳測過，發現 LLM 抽取有非決定性
+ * ——同一張圖兩次抽出的欄位名稱不一樣，其中一個數字甚至兩次被貼上不同單位（一次是
+ * 「用電天數」、一次變成「這期用電度數 kWh」），信心度卻兩次都還是 70% 左右，完全沒反映
+ * 出兩次結果互相矛盾。這個工具的賣點之一是幫使用者抓缺件/資料異常，如果 AI 讀錯又沒有
+ * 人工修正的空間，這個賣點就站不住——所以讓使用者在聊天預覽卡片裡確認前，可以直接編輯
+ * AI 讀出來的欄位名稱/數值/單位，取代 AI 這次讀到的版本。
+ *
+ * 這裡把「使用者編輯過的欄位」轉成跟 parseEvidence()／extractEntriesWithLlm() 一樣的
+ * raw entry 形狀，一樣要通過 normalizeEntry() 的安全白名單（欄位名稱格式、單位格式、
+ * injection 關鍵字全部照舊檢查，不因為是人工輸入就跳過）。confidence 給 1、
+ * humanConfirmed 給 true——人已經明確看過並確認這個值，語意上跟系統相信度最高的來源
+ * 一致，讓下面的 eligibleForCalculation 判斷可以正確把人工確認過的高影響欄位視為可信。
+ */
+function humanReviewedToRawEntries(item) {
+  if (!Array.isArray(item.humanReviewedEntries)) return null;
+  return item.humanReviewedEntries.map((entry) => ({
+    field: entry && entry.field,
+    value: entry && entry.value,
+    unit: entry && entry.unit ? entry.unit : null,
+    sourcePage: 1,
+    confidence: 1,
+    humanConfirmed: true,
+  }));
 }
 
 function normalizeEntry(raw, item) {
@@ -404,7 +436,8 @@ function analyzeEvidence(snapshot) {
       nextActions.push('請以允許的 ASCII 檔名與受控欄位重新上傳 Demo 證據。');
       continue;
     }
-    const parsed = parseEvidence({ ...item, filename: safeSourceFile }, text);
+    const humanReviewed = humanReviewedToRawEntries(item);
+    const parsed = humanReviewed || parseEvidence({ ...item, filename: safeSourceFile }, text);
     if (parsed.length > MAX_ENTRIES_PER_EVIDENCE) truncated = true;
     for (const raw of parsed.slice(0, MAX_ENTRIES_PER_EVIDENCE)) {
       if (entries.length >= MAX_ENTRIES_PER_CASE) {
@@ -567,4 +600,16 @@ module.exports = {
   MODEL_VERSION,
   PROMPT_VERSION,
   analyzeEvidence,
+  // 以下是給 services/agent/analyzeLlm.js 重用的既有確定性邏輯（安全過濾／單位驗證／
+  // 跨文件 heuristic／缺件偵測）——LLM 版本只替換「怎麼從文件文字抽出 raw 候選欄位」
+  // 這一步，其餘全部沿用同一套已測試過的程式碼，不重寫、不重複維護兩份邏輯。
+  decodeEvidence,
+  containsInjection,
+  normalizeEntry,
+  humanReviewedToRawEntries,
+  missingEvidenceFindings,
+  evaluateHeuristic,
+  DEMO_HEURISTICS,
+  SAFE_SOURCE_FILE,
+  SAFE_SOURCE_LABEL,
 };

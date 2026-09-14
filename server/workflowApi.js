@@ -8,6 +8,11 @@ const {
 } = require('./carbonAdapter');
 const trustAdapter = require('./trustAdapter');
 const agentAdapter = require('./agentAdapter');
+const vaultKeys = require('./vaultKeys');
+const googleTokens = require('./googleTokens');
+const googleApi = require('../services/notify/google');
+const { ROLES: DPP_ROLES, buildLayeredDisclosure } = require('../services/dpp');
+const timestampService = require('../services/timestamp');
 
 const MAX_EVIDENCE_BYTES = 512 * 1024;
 const MAX_EVIDENCE_PER_CASE = 16;
@@ -25,6 +30,11 @@ const REQUIRED_EVIDENCE_TYPES = new Set([
   'production_report',
   'precursor_list',
 ]);
+// 即時預覽抽取只支援「真的能直接讀」的格式：圖片走 gpt-5-mini 的 image_url 直接讀圖，
+// 文字/JSON 走純文字 prompt。application/pdf 目前在這個 demo 裡其實是貼了標籤的純文字
+// 內容，不是真的二進位 PDF 解析——刻意不讓 preview 端點假裝支援，寧可明確拒絕、請使用者
+// 改貼文字或改傳截圖，也不要看起來「有在讀 PDF」其實沒有。
+const PREVIEW_MEDIA_TYPES = new Set(['image/png', 'image/jpeg', 'text/plain', 'application/json']);
 
 function isIsoDate(value) {
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
@@ -113,6 +123,7 @@ function evidenceMetadata(item, includeVerifierFields = false) {
     humanConfirmed: item.humanConfirmed,
     mediaType: item.mediaType,
     sizeBytes: item.sizeBytes,
+    vaultEncrypted: !!item.vaultEncrypted,
   };
   if (includeVerifierFields) {
     result.filename = item.filename;
@@ -445,11 +456,17 @@ function audit(actor, action, targetType, targetId, result, reasonCode, caseId, 
   });
 }
 
-function analyzeCase(actor, caseId) {
+/**
+ * 2026-08-26 隊長裁示落地：預設走全面 LLM（`agentAdapter.analyzeCaseWithLlm`），LLM 呼叫
+ * 失敗／逾時／額度用完／格式錯誤都在 adapter 內部自動退回規則引擎，這裡完全不用另外處理
+ * fallback 邏輯——但要把 `usedFallback`/`fallbackReason` 老實記進 audit 跟回應本體，讓
+ * 「這次到底是不是真的用了 LLM」在稽核紀錄跟畫面上都看得到，不是悄悄降級沒人知道。
+ */
+async function analyzeCase(actor, caseId) {
   const scope = requireCase(actor, caseId, 'Supplier');
   if (scope.error) return scope.error;
   try {
-    const report = agentAdapter.analyzeCase(caseId);
+    const { report, usedFallback, fallbackReason } = await agentAdapter.analyzeCaseWithLlm(caseId);
     workflowStore.setRiskReport(caseId, report);
     const reasonCodes = [...new Set(report.findings.map((finding) => finding.reasonCode))];
     workflowStore.setServiceStatus('agent', {
@@ -477,10 +494,14 @@ function analyzeCase(actor, caseId) {
           discrepancies: report.discrepancies.length,
         },
         reasonCodes,
+        usedFallback,
+        ...(usedFallback ? { fallbackReason } : {}),
       }
     );
     return ok(200, {
       report,
+      usedFallback,
+      fallbackReason,
       service: workflowStore.getServices().agent,
       caseStatusUnchanged: scope.caseRecord.status,
       demoOnly: true,
@@ -565,11 +586,83 @@ function validateEvidenceInput(body) {
   return { filename, metadata };
 }
 
+/**
+ * 上傳內容的 Vault 加密欄位是選填的——沒帶就是舊有明碼行為（Verifier 還沒註冊 Vault 裝置
+ * 時，瀏覽器端會刻意不加密，直接送明碼），完全不影響既有測試/既有行為。帶了 vaultEncrypted:
+ * true 就必須把另外三個欄位一起帶齊，不能只帶一半——半殘的加密紀錄比完全不加密更危險
+ * （看起來像加密過、其實解不開或解出垃圾）。
+ */
+function validateVaultEncryptionFields(body) {
+  if (body.vaultEncrypted !== true) {
+    return { vaultEncrypted: false };
+  }
+  const ivOk = typeof body.vaultIvBase64 === 'string' && body.vaultIvBase64.trim();
+  const ephemeralOk =
+    body.vaultEphemeralPublicKeyJwk &&
+    typeof body.vaultEphemeralPublicKeyJwk === 'object' &&
+    !Array.isArray(body.vaultEphemeralPublicKeyJwk);
+  const keyIdOk = typeof body.vaultKeyId === 'string' && body.vaultKeyId.trim();
+  if (!ivOk || !ephemeralOk || !keyIdOk) {
+    throw new WorkflowAdapterError(
+      'INVALID_VAULT_ENCRYPTION_PAYLOAD',
+      'vaultEncrypted 為 true 時，vaultIvBase64／vaultEphemeralPublicKeyJwk／vaultKeyId 都是必填。',
+      null
+    );
+  }
+  return {
+    vaultEncrypted: true,
+    vaultIvBase64: body.vaultIvBase64,
+    vaultEphemeralPublicKeyJwk: body.vaultEphemeralPublicKeyJwk,
+    vaultKeyId: body.vaultKeyId,
+  };
+}
+
+// 2026-08-29：聊天預覽卡片讓使用者在確認前編輯 AI 讀出來的欄位（見 services/agent/index.js
+// 的 humanReviewedToRawEntries() 註解——真的拿一張民國 101 年電費單重複上傳，發現 LLM
+// 兩次抽出的欄位名稱不一樣，同一個數字甚至兩次被貼上不同單位）。這裡只做輕量的形狀驗證
+// （陣列、field 非空字串、value 是 string/number/boolean、unit 選填字串），真正的字元/
+// 長度白名單交給分析階段既有的 normalizeEntry() 統一把關——跟其他來源的 raw entries（LLM
+// 抽取／regex 解析）用同一道安全閘門，不因為是人工輸入就少一層檢查。
+const MAX_HUMAN_REVIEWED_ENTRIES = 20;
+
+function validateEvidenceEntries(rawEntries) {
+  if (rawEntries === undefined) return undefined;
+  if (!Array.isArray(rawEntries) || rawEntries.length > MAX_HUMAN_REVIEWED_ENTRIES) {
+    throw new WorkflowAdapterError(
+      'INVALID_EVIDENCE_ENTRIES',
+      `entries 必須是陣列，且最多 ${MAX_HUMAN_REVIEWED_ENTRIES} 筆。`,
+      null
+    );
+  }
+  return rawEntries.map((entry) => {
+    if (
+      !entry ||
+      typeof entry !== 'object' ||
+      typeof entry.field !== 'string' ||
+      !entry.field.trim() ||
+      !['string', 'number', 'boolean'].includes(typeof entry.value) ||
+      (entry.unit !== undefined && entry.unit !== null && typeof entry.unit !== 'string')
+    ) {
+      throw new WorkflowAdapterError(
+        'INVALID_EVIDENCE_ENTRIES',
+        'entries 內每筆都需要非空字串 field 與 string/number/boolean 的 value。',
+        null
+      );
+    }
+    return {
+      field: entry.field.trim(),
+      value: entry.value,
+      unit: typeof entry.unit === 'string' && entry.unit.trim() ? entry.unit.trim() : null,
+    };
+  });
+}
+
 async function createEvidence(actor, body) {
   const scope = requireCase(actor, body.caseId, 'Supplier');
   if (scope.error) return scope.error;
   try {
     const { filename, metadata } = validateEvidenceInput(body);
+    const humanReviewedEntries = validateEvidenceEntries(body.entries);
     if (workflowStore.listEvidence(body.caseId).length >= MAX_EVIDENCE_PER_CASE) {
       return fail(
         409,
@@ -591,6 +684,7 @@ async function createEvidence(actor, body) {
     }
     const bytes = decodeBase64(body.contentBase64);
     const hash = `sha256:${await sha256Bytes(bytes)}`;
+    const vaultEncryption = validateVaultEncryptionFields(body);
     const evidence = workflowStore.addEvidence({
       caseId: body.caseId,
       type: metadata.type,
@@ -604,11 +698,94 @@ async function createEvidence(actor, body) {
       mediaType: body.mediaType,
       sizeBytes: bytes.byteLength,
       contentBase64: body.contentBase64,
+      ...vaultEncryption,
+      ...(humanReviewedEntries ? { humanReviewedEntries } : {}),
       demoOnly: true,
     });
     audit(actor, 'EVIDENCE_UPLOAD', 'evidence', evidence.evidenceId, 'ALLOW', null, body.caseId);
     return ok(201, { evidence: supplierEvidence(evidence) });
   } catch (error) {
+    return safeAdapterFailure(error);
+  }
+}
+
+// 跟 public/js/case-workflow.js 的 REQUIRED_TYPE_LABELS 保持同一份對照——chatReply 要講
+// 「電費單」而不是回顯英文代碼 electricity_bill，使用者才看得懂。
+const REQUIRED_TYPE_LABELS_ZH = {
+  electricity_bill: '電費單',
+  fuel_ledger: '燃料紀錄',
+  production_report: '產量表',
+  precursor_list: '前驅物清單',
+};
+
+/**
+ * 給聊天框「情境 B：這不是文件，是在問問題」用的真實案件現況——只取 workflowStore 裡已經有
+ * 的資料組成一份摘要交給 LLM 當作 grounding，LLM 不會、也不需要自己編。抓不到案件或案件還
+ * 沒有任何分析紀錄都不算錯，就回傳「還缺全部」「沒有分析紀錄」的誠實現況。
+ */
+function buildChatCaseContext(caseId) {
+  const evidence = workflowStore.listEvidence(caseId) || [];
+  const presentTypes = [...new Set(evidence.map((item) => item.type))].filter((type) =>
+    REQUIRED_EVIDENCE_TYPES.has(type)
+  );
+  const missingTypes = [...REQUIRED_EVIDENCE_TYPES].filter((type) => !presentTypes.includes(type));
+  const toLabel = (type) => REQUIRED_TYPE_LABELS_ZH[type] || type;
+  const riskReport = workflowStore.getRiskReport(caseId);
+  return {
+    requiredLabels: [...REQUIRED_EVIDENCE_TYPES].map(toLabel),
+    presentLabels: presentTypes.map(toLabel),
+    missingLabels: missingTypes.map(toLabel),
+    openIssues: riskReport && riskReport.summary ? riskReport.summary.openIssues : [],
+  };
+}
+
+/**
+ * 上傳當下的即時抽取預覽（聊天式介面用，2026-08-26 隊長裁示落地）——只回傳候選欄位給前端
+ * 顯示成「AI 回覆」讓使用者確認，不寫入 workflowStore、不建立 evidence 紀錄。使用者確認
+ * 後前端另外呼叫既有 createEvidence 才是真的送出；這裡單純是「先看一眼 AI 讀到什麼」。
+ */
+async function previewEvidence(actor, body) {
+  const scope = requireCase(actor, body.caseId, 'Supplier');
+  if (scope.error) return scope.error;
+  try {
+    const filename = typeof body.filename === 'string' ? body.filename.trim() : '';
+    if (!filename || filename.length > 128 || filename.includes('/') || filename.includes('\\')) {
+      throw new WorkflowAdapterError('INVALID_FILENAME', 'filename 必須是 1–128 字元且不可包含路徑。', null);
+    }
+    const userNote = typeof body.userNote === 'string' ? body.userNote.trim().slice(0, 300) : '';
+    if (!PREVIEW_MEDIA_TYPES.has(body.mediaType)) {
+      throw new WorkflowAdapterError(
+        'MEDIA_TYPE_NOT_SUPPORTED_FOR_PREVIEW',
+        '即時預覽只支援 PNG/JPEG 圖片或純文字／JSON 內容；PDF 請改貼文字內容或改用截圖上傳。',
+        { supportedMediaTypes: [...PREVIEW_MEDIA_TYPES] }
+      );
+    }
+    const bytes = decodeBase64(body.contentBase64);
+    const isImage = body.mediaType.startsWith('image/');
+    const text = isImage ? undefined : new TextDecoder().decode(bytes);
+    const caseContext = buildChatCaseContext(body.caseId);
+    const { documentType, documentTypeConfidence, entries, chatReply, modelVersion, unsafeDropped, coveredFrom, coveredTo } = await agentAdapter.previewExtraction({
+      filename,
+      mediaType: body.mediaType,
+      text,
+      imageBase64: isImage ? body.contentBase64 : undefined,
+      userNote: userNote || undefined,
+      caseContext,
+      chatHistory: Array.isArray(body.chatHistory) ? body.chatHistory : undefined,
+    });
+    audit(actor, 'EVIDENCE_PREVIEW_EXTRACT', 'evidence', filename, 'ALLOW', null, body.caseId, {
+      modelVersion,
+      documentType,
+      entryCount: entries.length,
+      isChatReply: Boolean(chatReply),
+    });
+    return ok(200, { documentType, documentTypeConfidence, entries, chatReply, modelVersion, unsafeDropped, coveredFrom, coveredTo, demoOnly: true });
+  } catch (error) {
+    if (error instanceof agentAdapter.AgentAdapterError) {
+      const stable = agentAdapter.stableAgentError(error);
+      audit(actor, 'EVIDENCE_PREVIEW_EXTRACT', 'evidence', body.filename || null, 'ERROR', stable.code, body.caseId);
+      return fail(422, stable.code, stable.message, stable.details, stable.retryable);
+    }
     return safeAdapterFailure(error);
   }
 }
@@ -659,6 +836,41 @@ function submitCase(actor, caseId) {
   }
 }
 
+/**
+ * RFC 3161 時戳(見 docs/trust/RFC3161_TIMESTAMP_PLAN.md、services/timestamp/)。
+ * 只在 Gate 判 GATE_OK(`gate.inputHash` 有值,見 server/trustAdapter.js 的 finalize())
+ * 時才時戳——這是整個信任閘門層唯一的「已建立事實」時刻,NEEDS_EVIDENCE/BLOCKED 狀態
+ * 都還在流程中,時戳沒有意義。
+ *
+ * 預設關閉(`ENABLE_RFC3161_TIMESTAMP` 環境變數未設時直接回傳 null),原因:
+ *   1. 這是增量能力,不是放行的必要條件——時戳完全失敗(TSA 打不通)也不該影響
+ *      revalidateCase() 本身的成功回應,`requestTimestamp()` 本身已經設計成不拋例外、
+ *      用 status 欄位表達成敗（見 services/timestamp/index.js），這裡只是單純呼叫。
+ *   2. 更重要的是：tests/trust/smoke.js 等既有 43+ 項測試都會呼叫到 revalidateCase()，
+ *      如果沒有這道開關，會讓這些原本完全離線的測試意外連上真實 DigiCert/Sectigo 網路，
+ *      違反這個 repo 自己的測試哲學（見 services/timestamp/ 三份文件反覆強調的
+ *      「不放進預設 npm test」原則）。真正驗證這條路徑用的是
+ *      tests/workflow/timestampIntegration.smoke.js，會自己开这个开关。
+ *
+ * 這裡選擇「await 同步等待」而不是 Cloudflare Workers 的 `ctx.waitUntil()` 背景執行：
+ * workflowApi.js 目前完全不持有 ExecutionContext，要接 waitUntil() 需要往上改動
+ * worker/index.js 的 DO fetch handler 簽名，牽動範圍變大；這個 endpoint 本來就不是
+ * 高頻/低延遲要求的路徑（demo 供應商手動按「重新驗證」），多等 TSA 一次網路來回
+ * （實測約 1 秒，見 實驗記錄/RFC3161_TSA連通性測試_20260911.md）換取實作簡單、
+ * 風險低，是刻意的取捨，不是沒想到 waitUntil()。
+ */
+async function timestampGateResultIfEnabled(caseId, gate) {
+  if (process.env.ENABLE_RFC3161_TIMESTAMP !== 'true') return null;
+  if (!gate || !gate.inputHash) return null;
+  const canonicalPayload = JSON.stringify({
+    caseId,
+    inputHash: gate.inputHash,
+    verification: gate.verification,
+    reasonCodes: gate.reasonCodes || [],
+  });
+  return timestampService.requestTimestamp(canonicalPayload);
+}
+
 async function revalidateCase(actor) {
   const caseId = workflowStore.DEMO_CASE_ID;
   const scope = requireCase(actor, caseId, 'Supplier');
@@ -675,6 +887,7 @@ async function revalidateCase(actor) {
         carbon.annual.calculationReceipt.inputHash,
     });
     workflowStore.setTrustServices(result);
+    const timestampProof = await timestampGateResultIfEnabled(caseId, result.gate);
     const evaluated = applyReadiness(caseId);
     audit(
       actor,
@@ -683,7 +896,8 @@ async function revalidateCase(actor) {
       caseId,
       evaluated.readiness.status === 'BLOCKED' ? 'DENY' : 'ALLOW',
       evaluated.readiness.reasonCodes[0] || null,
-      caseId
+      caseId,
+      { timestampProof }
     );
     return ok(200, {
       case: maskCase(evaluated.caseRecord, actor, true),
@@ -794,6 +1008,79 @@ function revokeGrant(actor, grantId) {
   return ok(200, { grantId, revoked: true, revokedAt: revokedGrant.revokedAt });
 }
 
+/**
+ * Vault 加密金鑰註冊/查詢（WebAuthn PRF 版）。跟 accessVault() 的 Grant/token 機制是不同層次：
+ * 這裡管的是「Verifier 的 Vault 身份金鑰（公鑰/已包裝私鑰）長什麼樣子」，不判斷任何一次
+ * 存取許不許可——存取許可完全還是由 createGrant/accessVault 的既有機制把關，這一層不重複
+ * 判斷一次「這個人是不是 Verifier」，只負責金鑰資料本身的存取。
+ *
+ * GET 對任何已認證的 Demo 角色開放（Supplier 上傳前要讀公鑰去加密；Verifier 開底稿前要讀
+ * 自己的已包裝私鑰去解密），POST 只有 Verifier 能呼叫。
+ */
+function getVaultKeyStatus(actor) {
+  const record = vaultKeys.getVerifierKey();
+  if (!record) {
+    return ok(200, { registered: false, history: [] });
+  }
+  return ok(200, {
+    registered: true,
+    keyId: record.keyId,
+    credentialId: record.credentialId,
+    publicKeyJwk: record.publicKeyJwk,
+    wrappedPrivateKeyBase64: record.wrappedPrivateKeyBase64,
+    wrapIvBase64: record.wrapIvBase64,
+    prfSaltBase64: record.prfSaltBase64,
+    createdAt: record.createdAt,
+    history: vaultKeys.listVerifierKeyHistory(),
+    demoOnly: true,
+  });
+}
+
+/** 解密舊底稿要用「當時那把」金鑰，不是永遠用最新一把——輪替之後舊金鑰還在保留期限內
+ * 就查得到，超過 MAX_HISTORY 被淘汰的版本回 404，前端要把這個誠實顯示成「這把金鑰已經
+ * 超過保留期限」，不是裝作解密失敗是別的原因。*/
+function getVaultKeyByIdRoute(actor, keyId) {
+  const record = vaultKeys.getVerifierKeyById(keyId);
+  if (!record) {
+    return fail(404, 'VAULT_KEY_VERSION_NOT_FOUND', '此金鑰版本已超過保留期限或不存在，無法解密。');
+  }
+  return ok(200, {
+    registered: true,
+    keyId: record.keyId,
+    credentialId: record.credentialId,
+    publicKeyJwk: record.publicKeyJwk,
+    wrappedPrivateKeyBase64: record.wrappedPrivateKeyBase64,
+    wrapIvBase64: record.wrapIvBase64,
+    prfSaltBase64: record.prfSaltBase64,
+    createdAt: record.createdAt,
+    demoOnly: true,
+  });
+}
+
+function registerVaultKey(actor, body) {
+  if (actor.role !== 'Verifier') {
+    return fail(403, 'ROLE_FORBIDDEN', '只有 Verifier 能註冊/輪替 Vault 裝置金鑰。');
+  }
+  try {
+    const record = vaultKeys.addVerifierKey({
+      credentialId: body.credentialId,
+      publicKeyJwk: body.publicKeyJwk,
+      wrappedPrivateKeyBase64: body.wrappedPrivateKeyBase64,
+      wrapIvBase64: body.wrapIvBase64,
+      prfSaltBase64: body.prfSaltBase64,
+    });
+    audit(actor, 'VAULT_KEY_REGISTER', 'vault_key', record.keyId, 'ALLOW', null, workflowStore.DEMO_CASE_ID);
+    return ok(201, {
+      registered: true,
+      keyId: record.keyId,
+      createdAt: record.createdAt,
+      demoOnly: true,
+    });
+  } catch (error) {
+    return fail(400, 'INVALID_VAULT_KEY_PAYLOAD', error.message || 'Vault 金鑰註冊資料不完整。');
+  }
+}
+
 async function accessVault(actor, evidenceId, context, mode) {
   const action = mode === 'download' ? 'VAULT_DOWNLOAD' : 'VAULT_OPEN';
   const deny = (caseId, code) => {
@@ -838,6 +1125,13 @@ async function accessVault(actor, evidenceId, context, mode) {
     evidence: {
       ...evidenceMetadata(item, true),
       contentBase64: item.contentBase64,
+      ...(item.vaultEncrypted
+        ? {
+            vaultIvBase64: item.vaultIvBase64,
+            vaultEphemeralPublicKeyJwk: item.vaultEphemeralPublicKeyJwk,
+            vaultKeyId: item.vaultKeyId,
+          }
+        : {}),
     },
     access: {
       mode,
@@ -926,6 +1220,300 @@ function physicalRealityBoundary() {
   });
 }
 
+/**
+ * Google OAuth 通知串接（Day 5 待辦）——設計原則跟 commit_cbam_draft 的人審精神一致：
+ * AI（下面的 draftCaseNotification）只能「問」跟「草擬」，實際寄信/寫入行事曆
+ * （sendCaseNotificationEmail／createCaseReminderEvent）一定要呼叫端明確帶 confirm:true，
+ * 不是另開一套權限邏輯，是同一個「人審才能真的動作」原則套用在通知這個新工具上。
+ *
+ * token 存放見 server/googleTokens.js；跟 Google 對話的純函式見
+ * services/notify/google.js；這裡只負責 HTTP route 的輸入驗證、案件 scope 檢查、audit。
+ */
+
+function requireGoogleEnv() {
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+  if (!clientId || !clientSecret) {
+    throw new WorkflowAdapterError(
+      'GOOGLE_OAUTH_NOT_CONFIGURED',
+      '伺服器尚未設定 GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET。',
+      null
+    );
+  }
+  return { clientId, clientSecret };
+}
+
+function googleRedirectUri(origin) {
+  if (!origin) {
+    throw new WorkflowAdapterError(
+      'GOOGLE_ORIGIN_UNKNOWN',
+      '無法判斷目前網址，請重新整理頁面後再試。',
+      null
+    );
+  }
+  return `${origin}/api/oauth/google/callback`;
+}
+
+/** GoogleNotifyError 需要專屬的 stable 映射（見 services/notify/google.js），一般
+ * stableError() 的 fallback 訊息是碳排計算專用文字，套在 Google 錯誤上會誤導。 */
+function stableGoogleOrWorkflowError(error) {
+  if (error instanceof googleApi.GoogleNotifyError) return googleApi.stableGoogleError(error);
+  return stableError(error);
+}
+
+function googleAuthorize(actor, origin) {
+  if (actor.role !== 'Supplier') {
+    return fail(403, 'ROLE_FORBIDDEN', '只有 Supplier 能連接 Google 帳號。');
+  }
+  try {
+    const { clientId } = requireGoogleEnv();
+    const state = randomToken();
+    googleTokens.issuePendingState(state);
+    const authorizeUrl = googleApi.buildAuthorizeUrl({
+      clientId,
+      redirectUri: googleRedirectUri(origin),
+      state,
+    });
+    return ok(200, { authorizeUrl });
+  } catch (error) {
+    return safeAdapterFailure(error);
+  }
+}
+
+function googleStatus() {
+  const tokens = googleTokens.getTokens();
+  if (!tokens) return ok(200, { connected: false });
+  return ok(200, {
+    connected: true,
+    connectedAt: tokens.connectedAt,
+    connectedBy: tokens.connectedBy,
+    scope: tokens.scope,
+    hasRefreshToken: Boolean(tokens.refreshToken),
+  });
+}
+
+async function googleDisconnect(actor) {
+  if (actor.role !== 'Supplier') {
+    return fail(403, 'ROLE_FORBIDDEN', '只有 Supplier 能中斷 Google 連接。');
+  }
+  const tokens = googleTokens.getTokens();
+  if (tokens) {
+    await googleApi.revokeToken(tokens.refreshToken || tokens.accessToken);
+  }
+  googleTokens.clear();
+  audit(actor, 'GOOGLE_OAUTH_DISCONNECT', 'google_connection', null, 'ALLOW', null, null);
+  return ok(200, { connected: false });
+}
+
+/**
+ * 這個路由不是給 Demo 角色呼叫的一般 API——是 Google 自己導回瀏覽器的重新導向端點，
+ * 這次瀏覽器 navigation 不會帶 x-demo-role（見 apiFetch.js 特別處理這條路徑的註解）。
+ * 回傳值是給呼叫端組成 302 redirect 用，不是 JSON body。
+ */
+async function handleGoogleOAuthCallback(url) {
+  const code = url.searchParams.get('code');
+  const state = url.searchParams.get('state');
+  const errorParam = url.searchParams.get('error');
+  const redirectBase = `${url.origin}/`;
+  const fixedActorId = workflowStore.DEMO_ACTORS.Supplier.actorId;
+
+  if (errorParam) {
+    return { redirectTo: `${redirectBase}?googleOauth=error&reason=${encodeURIComponent(errorParam)}` };
+  }
+  if (!code || !state || !googleTokens.consumePendingState(state)) {
+    return { redirectTo: `${redirectBase}?googleOauth=error&reason=invalid_state` };
+  }
+  try {
+    const { clientId, clientSecret } = requireGoogleEnv();
+    const redirectUri = googleRedirectUri(url.origin);
+    const tokenResponse = await googleApi.exchangeCodeForTokens({
+      clientId,
+      clientSecret,
+      redirectUri,
+      code,
+    });
+    googleTokens.setTokens({
+      accessToken: tokenResponse.access_token,
+      refreshToken: tokenResponse.refresh_token || null,
+      expiresAtMs: Date.now() + (tokenResponse.expires_in || 3600) * 1000,
+      scope: tokenResponse.scope || googleApi.SCOPES,
+      connectedBy: fixedActorId,
+    });
+    workflowStore.appendAudit({
+      actorId: fixedActorId,
+      role: 'Supplier',
+      action: 'GOOGLE_OAUTH_CONNECT',
+      targetType: 'google_connection',
+      targetId: null,
+      result: 'ALLOW',
+      reasonCode: null,
+      caseId: null,
+    });
+    return { redirectTo: `${redirectBase}?googleOauth=connected` };
+  } catch (error) {
+    workflowStore.appendAudit({
+      actorId: fixedActorId,
+      role: 'Supplier',
+      action: 'GOOGLE_OAUTH_CONNECT',
+      targetType: 'google_connection',
+      targetId: null,
+      result: 'ERROR',
+      reasonCode: stableGoogleOrWorkflowError(error).code,
+      caseId: null,
+    });
+    return { redirectTo: `${redirectBase}?googleOauth=error&reason=exchange_failed` };
+  }
+}
+
+async function ensureFreshGoogleAccessToken() {
+  const tokens = googleTokens.getTokens();
+  if (!tokens) {
+    throw new WorkflowAdapterError('GOOGLE_NOT_CONNECTED', '尚未連接 Google 帳號，請先完成連接。', null);
+  }
+  if (tokens.expiresAtMs && tokens.expiresAtMs - Date.now() > 60 * 1000) {
+    return tokens.accessToken;
+  }
+  if (!tokens.refreshToken) {
+    throw new WorkflowAdapterError(
+      'GOOGLE_REAUTH_REQUIRED',
+      'Google 授權已過期且沒有可用的 refresh token，請重新連接。',
+      null
+    );
+  }
+  const { clientId, clientSecret } = requireGoogleEnv();
+  const refreshed = await googleApi.refreshAccessToken({
+    clientId,
+    clientSecret,
+    refreshToken: tokens.refreshToken,
+  });
+  googleTokens.updateAccessToken({
+    accessToken: refreshed.access_token,
+    expiresAtMs: Date.now() + (refreshed.expires_in || 3600) * 1000,
+  });
+  return refreshed.access_token;
+}
+
+/** 純文字草稿，不打任何外部 API、不需要 Google 已連接——「AI 只能問跟草擬」這句話字面上
+ * 的意思：草擬這一步完全不需要動用真的寄信/寫入行事曆的權限。 */
+function buildNotificationDraft(caseId) {
+  const readiness = evidenceReadiness(caseId);
+  const missingLabels = readiness.missing.map((type) => REQUIRED_TYPE_LABELS_ZH[type] || type);
+  const caseRecord = workflowStore.getCase(caseId);
+  const reminderAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+  const subject = `【Mandate】${caseId} 尚缺 ${missingLabels.length} 項必要文件`;
+  const bodyLines = [
+    `案件 ${caseId}（${caseRecord ? caseRecord.title : ''}）目前還缺以下必要文件：`,
+    ...missingLabels.map((label) => `・${label}`),
+    '',
+    '請盡快至 Mandate 平台補齊，以利案件進入查驗階段。',
+    '（此信由 AI 草擬，經人工確認後寄出，非系統自動發送。）',
+  ];
+  return {
+    caseId,
+    missingLabels,
+    email: {
+      subject,
+      bodyText: bodyLines.join('\n'),
+    },
+    calendarReminder: {
+      summary: `補件提醒：${caseId} 缺 ${missingLabels.length} 項文件`,
+      description: bodyLines.join('\n'),
+      startIso: reminderAt.toISOString(),
+      endIso: new Date(reminderAt.getTime() + 30 * 60 * 1000).toISOString(),
+    },
+    demoOnly: true,
+  };
+}
+
+function draftCaseNotification(actor, caseId) {
+  const scope = requireCase(actor, caseId, 'Supplier');
+  if (scope.error) return scope.error;
+  const readiness = evidenceReadiness(caseId);
+  if (!readiness.missing.length) {
+    return fail(409, 'NO_MISSING_EVIDENCE', '此案件目前沒有缺件，不需要補件通知。');
+  }
+  const draft = buildNotificationDraft(caseId);
+  audit(actor, 'GOOGLE_NOTIFY_DRAFT', 'case', caseId, 'ALLOW', null, caseId, {
+    counts: { missing: readiness.missing.length },
+  });
+  return ok(200, draft);
+}
+
+async function sendCaseNotificationEmail(actor, caseId, body) {
+  const scope = requireCase(actor, caseId, 'Supplier');
+  if (scope.error) return scope.error;
+  if (body.confirm !== true) {
+    return fail(400, 'HUMAN_CONFIRMATION_REQUIRED', '寄送 Email 前必須明確確認（confirm 必須為 true）。');
+  }
+  const to = typeof body.to === 'string' ? body.to.trim() : '';
+  const subject = typeof body.subject === 'string' ? body.subject.trim() : '';
+  const bodyText = typeof body.bodyText === 'string' ? body.bodyText : '';
+  if (!to || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to) || !subject || !bodyText) {
+    return fail(
+      400,
+      'INVALID_NOTIFICATION_PAYLOAD',
+      'to／subject／bodyText 皆為必填，且 to 必須是有效 email。'
+    );
+  }
+  try {
+    const accessToken = await ensureFreshGoogleAccessToken();
+    const result = await googleApi.sendGmail({ accessToken, to, subject, bodyText });
+    audit(actor, 'GOOGLE_EMAIL_SEND', 'case', caseId, 'ALLOW', null, caseId, {
+      to,
+      messageId: result.id,
+    });
+    return ok(200, { sent: true, messageId: result.id, demoOnly: true });
+  } catch (error) {
+    const stable = stableGoogleOrWorkflowError(error);
+    audit(actor, 'GOOGLE_EMAIL_SEND', 'case', caseId, 'ERROR', stable.code, caseId, { to });
+    const status =
+      stable.code === 'GOOGLE_NOT_CONNECTED' || stable.code === 'GOOGLE_REAUTH_REQUIRED' ? 409 : 502;
+    return fail(status, stable.code, stable.message, stable.details, stable.retryable);
+  }
+}
+
+async function createCaseReminderEvent(actor, caseId, body) {
+  const scope = requireCase(actor, caseId, 'Supplier');
+  if (scope.error) return scope.error;
+  if (body.confirm !== true) {
+    return fail(
+      400,
+      'HUMAN_CONFIRMATION_REQUIRED',
+      '建立行事曆提醒前必須明確確認（confirm 必須為 true）。'
+    );
+  }
+  const summary = typeof body.summary === 'string' ? body.summary.trim() : '';
+  const startIso = typeof body.startIso === 'string' ? body.startIso : '';
+  const endIso = typeof body.endIso === 'string' ? body.endIso : '';
+  if (!summary || Number.isNaN(Date.parse(startIso)) || Number.isNaN(Date.parse(endIso))) {
+    return fail(
+      400,
+      'INVALID_NOTIFICATION_PAYLOAD',
+      'summary／startIso／endIso 皆為必填且必須是有效時間。'
+    );
+  }
+  try {
+    const accessToken = await ensureFreshGoogleAccessToken();
+    const result = await googleApi.createCalendarEvent({
+      accessToken,
+      summary,
+      description: typeof body.description === 'string' ? body.description : '',
+      startIso,
+      endIso,
+    });
+    audit(actor, 'GOOGLE_CALENDAR_CREATE', 'case', caseId, 'ALLOW', null, caseId, {
+      eventId: result.id,
+    });
+    return ok(200, { created: true, eventId: result.id, htmlLink: result.htmlLink || null, demoOnly: true });
+  } catch (error) {
+    const stable = stableGoogleOrWorkflowError(error);
+    audit(actor, 'GOOGLE_CALENDAR_CREATE', 'case', caseId, 'ERROR', stable.code, caseId);
+    const status =
+      stable.code === 'GOOGLE_NOT_CONNECTED' || stable.code === 'GOOGLE_REAUTH_REQUIRED' ? 409 : 502;
+    return fail(status, stable.code, stable.message, stable.details, stable.retryable);
+  }
+}
+
 async function handleWorkflowApi(method, pathname, body = {}, context = {}) {
   const isWorkflowRoute =
     pathname === '/api/cases' ||
@@ -937,6 +1525,8 @@ async function handleWorkflowApi(method, pathname, body = {}, context = {}) {
     pathname.startsWith('/api/vault/') ||
     pathname.startsWith('/api/workflow/') ||
     pathname.startsWith('/api/demo/') ||
+    pathname.startsWith('/api/notify/') ||
+    pathname === '/api/oauth/google/authorize' ||
     pathname === '/api/agent/analyze';
   if (!isWorkflowRoute) return null;
 
@@ -962,6 +1552,10 @@ async function handleWorkflowApi(method, pathname, body = {}, context = {}) {
 
   if (method === 'POST' && pathname === '/api/evidence') {
     return createEvidence(actor, body);
+  }
+
+  if (method === 'POST' && pathname === '/api/evidence/preview') {
+    return previewEvidence(actor, body);
   }
 
   const confirmMatch = pathname.match(/^\/api\/evidence\/([^/]+)\/confirm$/);
@@ -1019,6 +1613,19 @@ async function handleWorkflowApi(method, pathname, body = {}, context = {}) {
   const findingMatch = pathname.match(/^\/api\/verifier\/cases\/([^/]+)\/findings$/);
   if (method === 'POST' && findingMatch) {
     return addFinding(actor, decodeURIComponent(findingMatch[1]), body);
+  }
+
+  if (method === 'GET' && pathname === '/api/vault/keys/verifier') {
+    return getVaultKeyStatus(actor);
+  }
+
+  if (method === 'POST' && pathname === '/api/vault/keys/verifier') {
+    return registerVaultKey(actor, body);
+  }
+
+  const vaultKeyVersionMatch = pathname.match(/^\/api\/vault\/keys\/verifier\/([^/]+)$/);
+  if (method === 'GET' && vaultKeyVersionMatch) {
+    return getVaultKeyByIdRoute(actor, decodeURIComponent(vaultKeyVersionMatch[1]));
   }
 
   if (method === 'POST' && pathname === '/api/vault/grants') {
@@ -1081,6 +1688,33 @@ async function handleWorkflowApi(method, pathname, body = {}, context = {}) {
     return physicalRealityBoundary();
   }
 
+  if (method === 'GET' && pathname === '/api/oauth/google/authorize') {
+    return googleAuthorize(actor, context.origin);
+  }
+
+  if (method === 'GET' && pathname === '/api/notify/google/status') {
+    return googleStatus();
+  }
+
+  if (method === 'POST' && pathname === '/api/notify/google/disconnect') {
+    return googleDisconnect(actor);
+  }
+
+  const notifyDraftMatch = pathname.match(/^\/api\/cases\/([^/]+)\/notify\/draft$/);
+  if (method === 'POST' && notifyDraftMatch) {
+    return draftCaseNotification(actor, decodeURIComponent(notifyDraftMatch[1]));
+  }
+
+  const notifyEmailMatch = pathname.match(/^\/api\/cases\/([^/]+)\/notify\/email$/);
+  if (method === 'POST' && notifyEmailMatch) {
+    return sendCaseNotificationEmail(actor, decodeURIComponent(notifyEmailMatch[1]), body);
+  }
+
+  const notifyCalendarMatch = pathname.match(/^\/api\/cases\/([^/]+)\/notify\/calendar$/);
+  if (method === 'POST' && notifyCalendarMatch) {
+    return createCaseReminderEvent(actor, decodeURIComponent(notifyCalendarMatch[1]), body);
+  }
+
   if (method === 'POST' && pathname === '/api/workflow/reset') {
     const scope = requireCase(actor, workflowStore.DEMO_CASE_ID, 'Supplier');
     if (scope.error) return scope.error;
@@ -1096,9 +1730,35 @@ async function handleWorkflowApi(method, pathname, body = {}, context = {}) {
   return fail(404, 'API_NOT_FOUND', '找不到 workflow API。', { path: pathname });
 }
 
+/**
+ * GS1/DPP 分層揭露最小示意（services/dpp，Day 5 背景待辦 2）。刻意獨立於
+ * handleWorkflowApi() 之外、不經過它的 requireActor() 認證閘門——public/customer/customs
+ * 是「產品護照的外部查詢者」這條軸線，跟案件參與者的 x-demo-role 是不同概念，這裡刻意
+ * 示範「同一筆 Case 依角色回傳不同欄位子集」本身，不是要重做一套認證機制。純讀取，不影響
+ * Gate/Policy、不產生稽核事件。呼叫端（server/apiFetch.js）要在 handleWorkflowApi() 之前
+ * 呼叫這個函式。
+ */
+function handleDppApi(method, pathname, context = {}) {
+  const dppMatch = pathname.match(/^\/api\/dpp\/cases\/([^/]+)$/);
+  if (!(method === 'GET' && dppMatch)) return null;
+  const caseId = decodeURIComponent(dppMatch[1]);
+  const role = String(context.dppRole || 'public').trim().toLowerCase();
+  if (!DPP_ROLES.includes(role)) {
+    return fail(400, 'DPP_ROLE_INVALID', `role 必須是 ${DPP_ROLES.join('/')} 其中一種。`, { role });
+  }
+  const caseRecord = workflowStore.getCase(caseId);
+  if (!caseRecord) {
+    return fail(404, 'CASE_NOT_FOUND', '找不到這筆案件。', { caseId });
+  }
+  const carbon = workflowStore.getCarbon(caseId);
+  return ok(200, buildLayeredDisclosure({ caseRecord, outwardStatus: outwardStatus(caseRecord.status), carbon, role }));
+}
+
 module.exports = {
   ALLOWED_MEDIA_TYPES,
   MAX_EVIDENCE_PER_CASE,
   MAX_EVIDENCE_BYTES,
   handleWorkflowApi,
+  handleDppApi,
+  handleGoogleOAuthCallback,
 };

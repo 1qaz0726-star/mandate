@@ -284,6 +284,12 @@ function appendAudit(partial) {
     ...(partial.counts ? { counts: clone(partial.counts) } : {}),
     ...(partial.reasonCodes ? { reasonCodes: clone(partial.reasonCodes) } : {}),
     ...(partial.scenario ? { scenario: partial.scenario } : {}),
+    ...(partial.usedFallback !== undefined ? { usedFallback: partial.usedFallback } : {}),
+    ...(partial.fallbackReason ? { fallbackReason: partial.fallbackReason } : {}),
+    // RFC 3161 時戳結果(見 services/timestamp/、docs/trust/RFC3161_TIMESTAMP_PLAN.md)——
+    // 只在 WORKFLOW_REVALIDATE 且 Gate 判 GATE_OK 時才會有值,失敗/未啟用時是 null,
+    // 不影響這筆稽核事件本身的其他欄位(時戳是增量能力,不是稽核紀錄能否寫入的前提)。
+    ...(partial.timestampProof !== undefined ? { timestampProof: clone(partial.timestampProof) } : {}),
     demoOnly: true,
   };
   state.audit.push(event);

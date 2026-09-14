@@ -8,3 +8,8 @@ artifacts/
 node_modules/.cache/
 _backups/
 *.bak-*
+.tools/
+*.ptau
+.claude/settings.local.json
+.serena/
+openrouter.txt

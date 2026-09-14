@@ -16,7 +16,7 @@ const { checkPcfPayload, buildSupplementLetter } = require('./pcfCheck');
 const { plainReason } = require('./plainReason');
 const supabaseSync = require('./supabaseSync');
 const pactMapping = require('./pactMapping');
-const { handleWorkflowApi } = require('./workflowApi');
+const { handleWorkflowApi, handleDppApi, handleGoogleOAuthCallback } = require('./workflowApi');
 
 function buildActor(body) {
   const st = store.getState();
@@ -155,6 +155,10 @@ function runPolicySimulate(body) {
 
 async function handleApiPath(method, pathname, body, requestContext) {
   const reqBody = body || {};
+  // GS1/DPP 分層揭露示意刻意不經過 handleWorkflowApi() 的 x-demo-role 認證閘門（見
+  // server/workflowApi.js handleDppApi() 開頭註解），所以要在它之前檢查。
+  const dppResult = handleDppApi(method, pathname, requestContext || {});
+  if (dppResult) return dppResult;
   const workflowResult = await handleWorkflowApi(
     method,
     pathname,
@@ -600,10 +604,25 @@ async function handleFetchRequest(request) {
     demoRole: request.headers.get('x-demo-role') || url.searchParams.get('demoRole'),
     // Keep Vault credentials out of URLs and query logs.
     vaultToken: request.headers.get('x-vault-token'),
+    // GS1/DPP 分層揭露示意（services/dpp）：public/customer/customs，跟上面的
+    // demoRole（案件參與者角色）是不同軸線，故意分開一個查詢參數。
+    dppRole: url.searchParams.get('role'),
+    // Google OAuth redirect_uri 要跟目前部署網域完全一致，動態算比寫死一個網址好——
+    // 本機 localhost 跟正式 workers.dev 網域才能共用同一套程式碼（見 workflowApi.js
+    // googleRedirectUri()）。
+    origin: url.origin,
   };
 
   if (!pathname.startsWith('/api/')) {
     return null;
+  }
+
+  // Google 導回瀏覽器的重新導向端點——不是 x-demo-role 認證的一般 API 呼叫（這次瀏覽器
+  // navigation 是 Google 直接發起的，不會帶自訂 header），回應也不是 JSON，而是把瀏覽器
+  // 導回首頁。必須在下面 requireActor 認證閘門跟 jsonResponse 包裝之前特別處理。
+  if (method === 'GET' && pathname === '/api/oauth/google/callback') {
+    const { redirectTo } = await handleGoogleOAuthCallback(url);
+    return Response.redirect(redirectTo, 302);
   }
 
   let body = {};
