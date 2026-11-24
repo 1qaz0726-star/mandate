@@ -2,6 +2,8 @@
 
 碳數據信任閘門 Agent（CBAM／嵌入排放），可信 AI 黑客松 2026 PoC。
 
+> **BEACON 2026（MetaEarth 黑客松，12/06 交件）**：在 `beacon/me-network` 分支上工作，**先讀 `docs/beacon/HANDOFF.md`**。
+
 ## 先讀這些，不要重複問
 
 範圍、產品名、Demo 三幕劇情已經**定案鎖死**（2026-07-20）：`DECISIONS.md`。
